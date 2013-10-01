@@ -222,7 +222,6 @@ typedef enum OMX_INDEXTYPE {
     OMX_IndexConfigOtherPower,              /**< reference: OMX_OTHER_CONFIG_POWERTYPE */
     OMX_IndexConfigOtherStats,              /**< reference: OMX_OTHER_CONFIG_STATSTYPE */
 
-
     /* Reserved Time range */
     OMX_IndexTimeStartUnused = 0x09000000,
     OMX_IndexConfigTimeScale,               /**< reference: OMX_TIME_CONFIG_SCALETYPE */

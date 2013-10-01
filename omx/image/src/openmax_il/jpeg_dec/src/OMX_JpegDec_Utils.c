@@ -706,6 +706,8 @@ OMX_ERRORTYPE Fill_LCMLInitParamsJpegDec(LCML_DSP *lcml_dsp,
         OMX_PRINT2(pComponentPrivate->dbg, "JPEGdec:: nProgressive IMAGE");
         arr[7] = nFrameHeight;
         arr[8] = nFrameWidth;
+        if ((arr[7]%2) != 0) arr[7]++;
+        if ((arr[8]%2) != 0) arr[8]++;
         arr[9] = JPGDEC_SNTEST_PROG_FLAG;
     }
     else {

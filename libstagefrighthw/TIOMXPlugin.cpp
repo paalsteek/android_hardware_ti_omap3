@@ -19,19 +19,7 @@
 #include <dlfcn.h>
 
 #include <media/hardware/HardwareAPI.h>
-
-#define LITERAL_TO_STRING_INTERNAL(x)    #x
-#define LITERAL_TO_STRING(x) LITERAL_TO_STRING_INTERNAL(x)
-
-#define CHECK_EQ(x,y)                                                   \
-    LOG_ALWAYS_FATAL_IF(                                                \
-            (x) != (y),                                                 \
-            __FILE__ ":" LITERAL_TO_STRING(__LINE__) " " #x " != " #y)
-
-#define CHECK(x)                                                        \
-    LOG_ALWAYS_FATAL_IF(                                                \
-            !(x),                                                       \
-            __FILE__ ":" LITERAL_TO_STRING(__LINE__) " " #x)
+#include <media/stagefright/foundation/ADebug.h>
 
 namespace android {
 
@@ -49,6 +37,7 @@ TIOMXPlugin::TIOMXPlugin()
       mGetRolesOfComponentHandle(NULL) {
     if (mLibHandle != NULL) {
         mInit = (InitFunc)dlsym(mLibHandle, "TIOMX_Init");
+        //Engle, http://review.cyanogenmod.org/#/c/26498/
         mDeinit = (DeinitFunc)dlsym(mLibHandle, "TIOMX_Deinit");
 
         mComponentNameEnum =
@@ -84,9 +73,9 @@ OMX_ERRORTYPE TIOMXPlugin::makeComponentInstance(
     }
 
     return (*mGetHandle)(
-        reinterpret_cast<OMX_HANDLETYPE *>(component),
-        const_cast<char *>(name),
-        appData, const_cast<OMX_CALLBACKTYPE *>(callbacks));
+            reinterpret_cast<OMX_HANDLETYPE *>(component),
+            const_cast<char *>(name),
+            appData, const_cast<OMX_CALLBACKTYPE *>(callbacks));
 }
 
 OMX_ERRORTYPE TIOMXPlugin::destroyComponentInstance(

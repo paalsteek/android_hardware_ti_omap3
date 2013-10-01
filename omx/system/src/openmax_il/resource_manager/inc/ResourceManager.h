@@ -53,10 +53,10 @@
 #include <utils/Log.h>
 #undef LOG_TAG
 #define LOG_TAG "OMXRM"
-#define RM_EPRINT LOGE
+#define RM_EPRINT ALOGE
 
 #ifdef  RM_DEBUG
-        #define RM_DPRINT LOGD
+        #define RM_DPRINT ALOGD
 #define DSP_ERROR_EXIT(err, msg, label)                \
     if (DSP_FAILED (err)) {                        \
         ALOGD("\n****************RM ERROR : DSP ************************\n");\

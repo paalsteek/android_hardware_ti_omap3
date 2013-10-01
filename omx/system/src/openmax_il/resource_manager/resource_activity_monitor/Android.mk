@@ -9,7 +9,7 @@ LOCAL_SRC_FILES:= \
 
 LOCAL_C_INCLUDES += \
         $(TI_OMX_INCLUDES) \
-        $(TI_BRIDGE_TOP)/inc \
+        $(TI_BRIDGE_TOP)/api/inc \
         $(TI_OMX_SYSTEM)/resource_manager/resource_activity_monitor/inc
 
 LOCAL_SHARED_LIBRARIES := \

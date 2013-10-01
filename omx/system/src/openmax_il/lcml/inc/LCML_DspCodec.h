@@ -38,11 +38,8 @@
 #define MAX_OBJS                10
 #define MAX_STREAMS             10
 
-/* Reuse implementation */
+/* 720p implementation */
 #define MAX_DMM_BUFFERS 20
-/* If buffer size being mapped is large than this threshold,
-   bridge will be asked to writeback and invalidate entire cache */
-#define INVALIDATE_TRESHOLD 512*1024
 
 /*DSP specific*/
 #define DSP_DOF_IMAGE           "baseimage.dof"
@@ -56,17 +53,10 @@
 
 #define __ERROR_PROPAGATION__
 
-
 /*switch on/off here */
-#ifndef UNDER_CE
 #ifdef ANDROID
     #include <utils/Log.h>
 #endif
-#else
-    #include <oaf_osal.h>
-    #include <oaf_debug.h>
-#endif
-
 
 #ifdef __PERF_INSTRUMENTATION__
 #include "perf.h"
@@ -75,43 +65,31 @@
 #include <LCML_Types.h>
 #include <LCML_CodecInterface.h>
 #include <pthread.h>
-#include <OMX_TI_Common.h>
 
 /*DSP specific*/
 
-#define DSP_ERROR_EXIT(err, msg, label, pHandle)                \
+#define DSP_ERROR_EXIT(err, msg, label)                \
     if (DSP_FAILED (err)) {                        \
-        OMX_ERROR4 (((LCML_CODEC_INTERFACE *)pHandle)->dbg, "\n****************LCML ERROR : DSP ************************\n");\
-        OMX_ERROR4 (((LCML_CODEC_INTERFACE *)pHandle)->dbg, "Error: %s : Err Num = %d", msg, err);  \
+        ALOGE("\n****************LCML ERROR : DSPs ***********************\n");\
+        ALOGE("Error: %s : Err Num = %lx", msg, err);  \
         eError = OMX_ErrorHardware;                \
-        OMX_ERROR4 (((LCML_CODEC_INTERFACE *)pHandle)->dbg, "\n****************LCML ERROR : DSP ************************\n");\
+        ALOGE("\n****************LCML ERROR : DSP ************************\n");\
         goto label;                               \
-    }                                              /**/
+    }
 
-/* =======================================================================
- *
- * This enum is mean to translate buffer type to bridge values
- *
-  ====================================================================== */
-enum{
-  NO_ALIGNMENT_CHECK = 0x4000,
-  ALIGNMENT_CHECK= 0x8000,
-  MAX_ALIGNMENT_CHECK
-};
-
-
-/* ======================================================================= */
-/**
- * This enum is mean to abtract the enumerations of message optios that are
- * sent to dsp processor.
- */
-/*  ====================================================================== */
-enum{
-  DSPMSG_INVALIDATE_MEM = 0,
-  DSPMSG_WRBK_MEM,
-  DSPMSG_WRBK_INVALIDATE_MEM,
-  DSPMSG_WRBK_INV_ALL
-};
+#ifdef MOTO_FORCE_RECOVERY
+#include <DSPManager.h>
+#undef DSP_ERROR_EXIT
+#define DSP_ERROR_EXIT(err, msg, label) \
+    if (DSP_FAILED (err)) {                                                   \
+        ALOGE("\n****************LCML ERROR : DSPr ***********************\n");\
+        eError = OMX_ErrorHardware;                                           \
+        DSP_STATUS eStatus = DSPManager_Force_Recovery();                     \
+        ALOGE("Error: %s : Err Num %lx status:%lx", msg, err, eStatus);        \
+        ALOGE("\n****************LCML ERROR : DSP ************************\n");\
+        goto label;                                                           \
+    }
+#endif
 
 /* ======================================================================= */
 /**
@@ -143,10 +121,8 @@ typedef struct
     OMX_U32 tBufState;
     OMX_U32 bBufActive;
     OMX_U32 unBufID;
-    OMX_U32 iNumAvailableBuf;
-    OMX_U32 bDoNotFlushBuf;
-    OMX_U32 bDoNotInvalidateBuf;
     OMX_U32 ulReserved;
+    OMX_U32 iArmArg;/* storing dsp mapped address of structure*/
     OMX_U32 iArmbufferArg;/* ARM side buffer pointer*/
     OMX_U32 iArmParamArg;/*ARM side Param pointer*/
     OMX_U32 Bufoutindex;/* buffer index*/
@@ -288,7 +264,6 @@ typedef struct
 */
 OMX_ERRORTYPE GetHandle (OMX_HANDLETYPE* hInterface );
 
-void LCML_ReportDspError (void * arg);
 /**
 * Struct derives codec interface which have interface to implement for using
 * generic codec and also have pointer to DSP specific data and have queues for
@@ -329,9 +304,8 @@ typedef struct LCML_DSP_INTERFACE
     OMX_U32 mapped_buffer_count;
     OMX_BOOL ReUseMap;
     pthread_mutex_t m_isStopped_mutex;
-    OMX_BOOL buf_invalidate_flag;
-    OMX_BOOL buf_flush_flag;
 
+    OMX_BOOL vid_play_no_invalidate_flag;
 }LCML_DSP_INTERFACE;
 
 #endif /* __MMDSPCODEC_H__ */

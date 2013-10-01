@@ -24,8 +24,8 @@
 
 #include "Resource_Activity_Monitor.h"
 
-#undef LOG_TAG
-#define LOG_TAG "OMXRM DVFS MONITOR"
+#undef ALOG_TAG
+#define ALOG_TAG "OMXRM DVFS MONITOR"
 
 
 /* global to keep the current constraint across requests

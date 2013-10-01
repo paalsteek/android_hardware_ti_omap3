@@ -75,8 +75,8 @@ PERF_OBJHANDLE pPERF = NULL;
 #include <pthread.h>
 #include <signal.h>
 
-#undef LOG_TAG
-#define LOG_TAG "OMXRM"
+#undef ALOG_TAG
+#define ALOG_TAG "OMXRM"
 
 RM_ComponentList componentList;
 RM_ComponentList pendingComponentList;

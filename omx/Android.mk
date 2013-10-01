@@ -1,61 +1,71 @@
 ifeq ($(HARDWARE_OMX),true)
-ifeq ($(TARGET_BOARD_PLATFORM),omap4)
+
 LOCAL_PATH := $(call my-dir)
 TI_OMX_TOP := $(LOCAL_PATH)
-
-#build these only for froyo
-ifneq ($(filter 2.2%,$(PLATFORM_VERSION)),)
-#call to plugin
-include $(TI_OMX_TOP)/core_plugin/Android.mk
-
-#call to ti_omx_config_parser
-include $(TI_OMX_TOP)/ti_omx_config_parser/Android.mk
-endif
-
-#call to ducati domx
-include $(TI_OMX_TOP)/ducati/Android.mk
-endif
-
-ifeq ($(TARGET_BOARD_PLATFORM),omap3)
-LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-TI_BRIDGE_TOP := hardware/ti/omap3/dspbridge
+TI_OMAP_TOP := $(ANDROID_BUILD_TOP)/hardware/ti/omap3
+TI_BRIDGE_TOP := $(TI_OMAP_TOP)/dspbridge
+TI_BRIDGE_INCLUDES := $(TI_BRIDGE_TOP)/libbridge/inc
 
-OMX_DEBUG := 0
+OMX_DEBUG ?= 0
 RESOURCE_MANAGER_ENABLED := 0
 ENABLE_RMPM_STUB := 0
 DVFS_ENABLED := 0
-PERF_INSTRUMENTATION := 1
+PERF_INSTRUMENTATION := 0
 PERF_CUSTOMIZABLE := 1
 PERF_READER := 1
 
+BUILD_JPEG_DECODER ?= 1
+BUILD_JPEG_ENCODER ?= 1
+
+# Video pre/post processor
+BUILD_VPP ?= 1
+
+ifeq ($(OMX_DEBUG),1)
+BUILD_JPEG_DEC_TEST ?= 1
+BUILD_VPP_TEST ?=1
+endif
+
 TI_OMX_CFLAGS := -Wall -fpic -pipe -finline-functions -DSTATIC_TABLE -O0
 
-TI_OMX_TOP := $(LOCAL_PATH)
+# required to have DSP_NODEATTRIN.uProfileID in LCML_DspCodec.c
+TI_OMX_CFLAGS += -DOMAP_3430 -DOMAP_2430
+
+ifeq ($(BUILD_WITH_TI_AUDIO),1)
+TI_OMX_CFLAGS += -DBUILD_WITH_TI_AUDIO
+BUILD_AAC_DECODER := 1
+BUILD_MP3_DECODER := 1
+BUILD_WMA_DECODER := 1
+BUILD_AMRNB_DECODER := 1
+BUILD_AMRWB_DECODER := 1
+endif
+
+TI_OMX_TOP ?= $(LOCAL_PATH)
 TI_OMX_SYSTEM := $(TI_OMX_TOP)/system/src/openmax_il
 TI_OMX_VIDEO := $(TI_OMX_TOP)/video/src/openmax_il
 TI_OMX_AUDIO := $(TI_OMX_TOP)/audio/src/openmax_il
 TI_OMX_IMAGE := $(TI_OMX_TOP)/image/src/openmax_il
 
 TI_OMX_INCLUDES := \
-        $(TI_OMX_SYSTEM)/omx_core/inc
+    $(TI_OMX_SYSTEM)/omx_core/inc
 
 TI_OMX_COMP_SHARED_LIBRARIES := \
-        libdl \
-        libcutils \
-        liblog
+    libdl \
+    libcutils \
+    liblog \
+    libbridge \
+    libOMX_Core \
+    libLCML \
 
 ifeq ($(PERF_INSTRUMENTATION),1)
-TI_OMX_COMP_SHARED_LIBRARIES += \
-        libPERF
+TI_OMX_COMP_SHARED_LIBRARIES += libPERF
 endif
 
 ifeq ($(RESOURCE_MANAGER_ENABLED),1)
 TI_OMX_CFLAGS += -DRESOURCE_MANAGER_ENABLED
-TI_OMX_COMP_SHARED_LIBRARIES += \
-        libOMX_ResourceManagerProxy
+TI_OMX_COMP_SHARED_LIBRARIES += libOMX_ResourceManagerProxy
 endif
 
 ifeq ($(PERF_INSTRUMENTATION),1)
@@ -70,16 +80,20 @@ ifeq ($(DVFS_ENABLED),1)
 TI_OMX_CFLAGS += -DDVFS_ENABLED
 endif
 
+# Required for Motorola Defy, Cliq2 & DroidX Codecs
+ifeq ($(TARGET_USE_OMX_RECOVERY),true)
+TI_OMX_CFLAGS += -DMOTO_FORCE_RECOVERY
+endif
 
 TI_OMX_COMP_C_INCLUDES := \
-        $(TI_OMX_INCLUDES) \
-        $(TI_BRIDGE_TOP)/inc \
-        $(TI_OMX_SYSTEM)/lcml/inc \
-        $(TI_OMX_SYSTEM)/common/inc \
-        $(TI_OMX_SYSTEM)/perf/inc \
-        $(TI_OMX_SYSTEM)/resource_manager/inc \
-        $(TI_OMX_SYSTEM)/resource_manager_proxy/inc \
-        $(TI_OMX_SYSTEM)/omx_policy_manager/inc
+    $(TI_OMX_INCLUDES) \
+    $(TI_BRIDGE_INCLUDES) \
+    $(TI_OMX_SYSTEM)/lcml/inc \
+    $(TI_OMX_SYSTEM)/common/inc \
+    $(TI_OMX_SYSTEM)/perf/inc \
+    $(TI_OMX_SYSTEM)/resource_manager/inc \
+    $(TI_OMX_SYSTEM)/resource_manager_proxy/inc \
+    $(TI_OMX_SYSTEM)/omx_policy_manager/inc \
 
 ifeq ($(PERF_INSTRUMENTATION),1)
 include $(TI_OMX_SYSTEM)/perf/Android.mk
@@ -90,6 +104,15 @@ ifeq ($(PERF_READER),1)
 #include $(TI_OMX_SYSTEM)/perf/reader/Android.mk
 endif
 
+#ittiam components (test)
+ifeq ($(ITTIAM_AUDIO),1)
+TI_OMX_CFLAGS += -DBUILD_WITH_ITTIAM_AUDIO
+endif
+
+ifeq ($(ITTIAM_VIDEO),1)
+TI_OMX_CFLAGS += -DBUILD_WITH_ITTIAM_DIVX
+endif
+
 #call to common omx & system components
 include $(TI_OMX_SYSTEM)/omx_core/src/Android.mk
 include $(TI_OMX_SYSTEM)/lcml/src/Android.mk
@@ -98,7 +121,6 @@ include $(TI_OMX_SYSTEM)/lcml/src/Android.mk
 #include $(TI_OMX_SYSTEM)/omx_policy_manager/Android.mk
 
 #call to audio
-#include $(TI_OMX_TOP)/audio/tests/Android.mk
 include $(TI_OMX_AUDIO)/aac_dec/src/Android.mk
 include $(TI_OMX_AUDIO)/aac_enc/src/Android.mk
 include $(TI_OMX_AUDIO)/aac_enc/tests/Android.mk
@@ -111,7 +133,6 @@ include $(TI_OMX_AUDIO)/nbamr_dec/src/Android.mk
 include $(TI_OMX_AUDIO)/nbamr_enc/src/Android.mk
 include $(TI_OMX_AUDIO)/nbamr_enc/tests/Android.mk
 include $(TI_OMX_AUDIO)/wbamr_dec/src/Android.mk
-include $(TI_OMX_AUDIO)/wbamr_dec/tests/Android.mk
 include $(TI_OMX_AUDIO)/wbamr_enc/src/Android.mk
 include $(TI_OMX_AUDIO)/wbamr_enc/tests/Android.mk
 include $(TI_OMX_AUDIO)/g711_dec/src/Android.mk
@@ -131,36 +152,18 @@ include $(TI_OMX_AUDIO)/g729_dec/tests/Android.mk
 include $(TI_OMX_AUDIO)/g729_enc/src/Android.mk
 include $(TI_OMX_AUDIO)/g729_enc/tests/Android.mk
 include $(TI_OMX_AUDIO)/ilbc_dec/src/Android.mk
-include $(TI_OMX_AUDIO)/ilbc_dec/tests/Android.mk
 include $(TI_OMX_AUDIO)/ilbc_enc/src/Android.mk
-include $(TI_OMX_AUDIO)/ilbc_enc/tests/Android.mk
 
 #call to video
 include $(TI_OMX_VIDEO)/video_decode/Android.mk
-#include $(TI_OMX_VIDEO)/video_decode/test/Android.mk
+include $(TI_OMX_VIDEO)/video_decode/test/Android.mk
 include $(TI_OMX_VIDEO)/video_encode/Android.mk
-#include $(TI_OMX_VIDEO)/video_encode/test/Android.mk
-#include $(TI_OMX_VIDEO)/prepost_processor/Android.mk
-
-#call ittiam 720p codec
-#include $(TI_OMX_AUDIO)/aac_dec_ittiam/Android.mk
-#include $(TI_OMX_AUDIO)/aac_enc_ittiam/Android.mk
-#include $(TI_OMX_AUDIO)/wma_dec_ittiam/Android.mk
-#include $(TI_OMX_VIDEO)/video_decode_ittiam/Android.mk
-#include $(TI_OMX_VIDEO)/video_encode_ittiam/Android.mk
+include $(TI_OMX_VIDEO)/video_encode/test/Android.mk
+include $(TI_OMX_VIDEO)/prepost_processor/Android.mk
 
 #call to image
 include $(TI_OMX_IMAGE)/jpeg_enc/Android.mk
-#include $(TI_OMX_IMAGE)/jpeg_dec/Android.mk
+include $(TI_OMX_IMAGE)/jpeg_dec/Android.mk
 
-#build these only for froyo
-ifneq ($(filter 2.2%,$(PLATFORM_VERSION)),)
-#call to plugin
-include $(TI_OMX_TOP)/core_plugin/Android.mk
+endif # HARDWARE_OMX
 
-#call to ti_omx_config_parser
-include $(TI_OMX_TOP)/ti_omx_config_parser/Android.mk
-endif
-
-endif
-endif

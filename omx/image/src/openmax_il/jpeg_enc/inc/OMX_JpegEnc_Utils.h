@@ -50,7 +50,7 @@
 #define OMX_JPEGENC_UTILS__H
 #include <OMX_Component.h>
 #include <OMX_IVCommon.h>
-#include "usn.h"
+
 
 #ifndef UNDER_CE
 #include <dlfcn.h>
@@ -88,10 +88,10 @@
 #define COMP_MAX_NAMESIZE 127
 
 #define OMX_CustomCommandStopThread (OMX_CommandMax - 1)
-#define OMX_CustomCommandFatalError (OMX_CommandMax - 2)
 
 #define PADDING_128_BYTE	128
 #define PADDING_256_BYTE	256
+#define JPEGENC_THUMBNAIL_ABSENT_WARNING 4
 
 #ifdef UNDER_CE
     #include <oaf_debug.h>
@@ -112,8 +112,6 @@
 
 //JPEG Encoder Specific DSP Err Codes
 #define IUALG_ERR_INSUFF_BUFFER 0x8401
-
-#define __JPEG_OMX_PPLIB_ENABLED__
 
 /*Linked List */
 
@@ -140,8 +138,6 @@ void LinkedList_Destroy(LinkedList *LinkedList);
  *     M A C R O S
  */
 
-#define JPEGENC_ISFLAGSET(x,y)         (((x)>>(y)) & 0x1)
-
 #define OMX_CONF_INIT_STRUCT(_s_, _name_)   \
     memset((_s_), 0x0, sizeof(_name_)); \
     (_s_)->nSize = sizeof(_name_);      \
@@ -149,25 +145,6 @@ void LinkedList_Destroy(LinkedList *LinkedList);
     (_s_)->nVersion.s.nVersionMinor = 0x0;  \
     (_s_)->nVersion.s.nRevision = 0x0;      \
     (_s_)->nVersion.s.nStep = 0x0
-
-#define OMX_PARAM_SIZE_CHECK(_p_, _s_)\
-{\
-    if(((_p_)->nSize != _s_)){\
-        eError = OMX_ErrorBadParameter;\
-        goto EXIT;\
-    }\
-}
-
-#define OMX_PARAM_PORTDEFINITIONTYPE_CHECK(_p_) \
-{\
-    if(((_p_)->eDir == OMX_DirMax) ||\
-    ((_p_)->nBufferCountMin == 0) ||\
-    ((_p_)->nBufferCountActual < (_p_)->nBufferCountMin) ||\
-    ((_p_)->eDomain != OMX_PortDomainImage)){ \
-        eError = OMX_ErrorUnsupportedSetting;\
-        goto EXIT;\
-    }\
-}
 
 #define OMX_CHECK_PARAM(_ptr_)  \
 {   \
@@ -234,6 +211,7 @@ typedef struct IDMJPGE_TIGEM_Comment {
   OMX_U16 commentLen;
 } IDMJPGE_TIGEM_Comment;
 
+
 typedef struct IIMGENC_DynamicParams {
     OMX_U32 nSize;             /* nSize of this structure */
     OMX_U32 nNumAU;            /* Number of Access unit to encode,
@@ -267,21 +245,17 @@ typedef struct IDMJPGE_TIGEM_DynamicParams {
     OMX_U32 DRI_Interval ;
     JPEGENC_CUSTOM_HUFFMAN_TABLE *huffmanTable;
     IDMJPGE_TIGEM_CustomQuantTables *quantTable;
-    OMX_U32 (*pfResize)(OMX_U32,
-			OMX_U32,
-			OMX_U32,
-			OMX_U32,
-			OMX_U32,
-			OMX_U32,
-			OMX_U8*,
-			OMX_U8*);
 } IDMJPGE_TIGEM_DynamicParams;
+
+/* PPLIB not needed if the the input to jpeg encoder is yuv. Uncomment the next line if PPLIB is needed */
+/* #define __JPEG_OMX_PPLIB_ENABLED__ */
 
 #ifdef __JPEG_OMX_PPLIB_ENABLED__
 #define OMX_JPEGENC_NUM_DLLS (5)
 #else
 #define OMX_JPEGENC_NUM_DLLS (4)
 #endif
+
 
 #ifdef UNDER_CE
 #define JPEG_ENC_NODE_DLL "/windows/jpegenc_sn.dll64P"
@@ -305,8 +279,8 @@ typedef struct IDMJPGE_TIGEM_DynamicParams {
 #define JPGENC_SNTEST_INSTRMID         0
 #define JPGENC_SNTEST_OUTSTRMID        1
 #define JPGENC_SNTEST_ARGLENGTH        20
-#define JPGENC_SNTEST_INBUFCNT         1
-#define JPGENC_SNTEST_OUTBUFCNT        1
+#define JPGENC_SNTEST_INBUFCNT         4
+#define JPGENC_SNTEST_OUTBUFCNT        4
 #define JPGENC_SNTEST_MAX_HEIGHT       4096
 #define JPGENC_SNTEST_MAX_WIDTH        4096
 #define JPGENC_SNTEST_PROG_FLAG        1
@@ -315,12 +289,6 @@ typedef struct IDMJPGE_TIGEM_DynamicParams {
 #define JPEGE_DSPSTOP       0x01
 #define JPEGE_BUFFERBACK    0x02
 #define JPEGE_IDLEREADY     ( JPEGE_DSPSTOP | JPEGE_BUFFERBACK )
-
-typedef enum {
-    JPEGENC_XDM_APPLIEDCONCEALMENT=9, JPEGENC_XDM_INSUFFICIENTDATA=10, JPEGENC_XDM_CORRUPTEDDATA=11,
-    JPEGENC_XDM_CORRUPTEDHEADER=12, JPEGENC_XDM_UNSUPPORTEDINPUT=13, JPEGENC_XDM_UNSUPPORTEDPARAM=14,
-    JPEGENC_XDM_FATALERROR=15
-} JPEGENC_XDM_ErrorBit;
 
 typedef enum Content_Type
 {
@@ -383,7 +351,6 @@ typedef struct JPEGENC_BUFFER_PRIVATE {
     JPEGENC_BUFFER_OWNER eBufferOwner;
     OMX_BOOL bAllocByComponent;
     OMX_BOOL bReadFromPipe;
-    OMX_PTR pUalgParam
 } JPEGENC_BUFFER_PRIVATE;
 
 typedef struct JPEG_PORT_TYPE   {
@@ -404,10 +371,142 @@ typedef struct JPEGE_INPUT_PARAMS {
     OMX_U32 size;
 } JPEGE_INPUT_PARAMS;
 
-typedef struct JPEGENC_UALGOutputParams{
-    OMX_U32 lErrorCode;
+typedef struct _JPEGENC_CUSTOM_PARAM_DEFINITION {
+    OMX_U8 cCustomParamName[128];
+    OMX_INDEXTYPE nCustomParamIndex;
+} JPEGENC_CUSTOM_PARAM_DEFINITION;
+
+typedef struct JPEGENC_COMPONENT_PRIVATE
+{
+    JPEG_PORT_TYPE* pCompPort[NUM_OF_PORTS];
+    OMX_PORT_PARAM_TYPE* pPortParamType;
+    OMX_PORT_PARAM_TYPE* pPortParamTypeAudio;
+    OMX_PORT_PARAM_TYPE* pPortParamTypeVideo;
+    OMX_PORT_PARAM_TYPE* pPortParamTypeOthers;
+    OMX_PRIORITYMGMTTYPE* pPriorityMgmt;
+    OMX_CALLBACKTYPE cbInfo;
+    OMX_IMAGE_PARAM_QFACTORTYPE* pQualityfactor;
+    OMX_CONFIG_RECTTYPE  *pCrop;
+    /** This is component handle */
+    OMX_COMPONENTTYPE* pHandle;
+    /*Comonent Name& Version*/
+    OMX_STRING cComponentName;
+    OMX_VERSIONTYPE ComponentVersion;
+    OMX_VERSIONTYPE SpecVersion;
+
+    /** Current state of this component */
+    OMX_STATETYPE   nCurState;
+    OMX_STATETYPE   nToState;
+    OMX_U8          ExeToIdleFlag;  /* StateCheck */
+
+    OMX_U32 nInPortIn;
+    OMX_U32 nInPortOut;
+    OMX_U32 nOutPortIn;
+    OMX_U32 nOutPortOut;
+    OMX_BOOL bInportDisableIncomplete;
+    OMX_BOOL bOutportDisableIncomplete;
+    OMX_BOOL bSetLumaQuantizationTable;
+    OMX_BOOL bSetChromaQuantizationTable;
+    OMX_BOOL bSetHuffmanTable;
+	OMX_BOOL bConvert420pTo422i;
+	OMX_BOOL bPPLibEnable;
+    OMX_IMAGE_PARAM_QUANTIZATIONTABLETYPE *pCustomLumaQuantTable;
+    OMX_IMAGE_PARAM_QUANTIZATIONTABLETYPE *pCustomChromaQuantTable;
+    JPEGENC_CUSTOM_HUFFMANTTABLETYPE *pHuffmanTable;
+
+
+    /** The component thread handle */
+    pthread_t ComponentThread;
+    /** The pipes to maintain free buffers */
+    int free_outBuf_Q[2];
+    /** The pipes to maintain input buffers sent from app*/
+    int filled_inpBuf_Q[2];
+    /** The pipes for sending buffers to the thread */
+    int nCmdPipe[2];
+    int nCmdDataPipe[2];
+    OMX_U32 nApp_nBuf;
+    short int nNum_dspBuf;
+    int nCommentFlag;
+    OMX_U8 *pString_Comment;
+    JPEG_APPTHUMB_MARKER sAPP0;
+    JPEG_APPTHUMB_MARKER sAPP1;
+    JPEG_APPTHUMB_MARKER sAPP5;
+    JPEG_APP13_MARKER sAPP13;
+    JPEGE_INPUT_PARAMS InParams;
+#ifdef __JPEG_OMX_PPLIB_ENABLED__
+    OMX_U32 *pOutParams;
+#endif
+#ifdef RESOURCE_MANAGER_ENABLED
+    RMPROXY_CALLBACKTYPE rmproxyCallback;
+#endif
+    OMX_BOOL bPreempted;
+    int nFlags;
+    int nMarkPort;
+    OMX_PTR pMarkData;
+    OMX_HANDLETYPE hMarkTargetComponent;
+    OMX_BOOL bDSPStopAck;
+   OMX_BOOL bFlushComplete;
+    OMX_BOOL bAckFromSetStatus;
+    void* pLcmlHandle;   /* Review Utils.c */
+    int isLCMLActive;
+    LCML_DSP_INTERFACE* pLCML;
+    void * pDllHandle;
+    OMX_U8 nDRI_Interval;
+#ifdef KHRONOS_1_1
+    OMX_PARAM_COMPONENTROLETYPE componentRole;
+#endif
+    IDMJPGE_TIGEM_DynamicParams *pDynParams;
+
+    pthread_mutex_t jpege_mutex;
+    pthread_cond_t  stop_cond;
+    pthread_cond_t  flush_cond;
+    /* pthread_cond_t  control_cond; */
+    pthread_mutex_t jpege_mutex_app;
+    pthread_cond_t  populate_cond;
+    pthread_cond_t  unpopulate_cond;
+
+
+#ifdef __PERF_INSTRUMENTATION__
+    PERF_OBJHANDLE pPERF, pPERFcomp;
+#endif
+    OMX_BOOL errorSent;
+    OMX_U16 bExitCompThrd;
+    struct OMX_TI_Debug dbg;
+
+    /* Reference count for pending state change requests */
+    OMX_U32 nPendingStateChangeRequests;
+    pthread_mutex_t mutexStateChangeRequest;
+    pthread_cond_t StateChangeCondition;
+
+} JPEGENC_COMPONENT_PRIVATE;
+
+
+OMX_ERRORTYPE HandleJpegEncCommand (JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
+OMX_ERRORTYPE JpegEncDisablePort(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
+OMX_ERRORTYPE JpegEncEnablePort(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
+OMX_ERRORTYPE HandleJpegEncCommandFlush(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
+OMX_ERRORTYPE JPEGEnc_Start_ComponentThread(OMX_HANDLETYPE pHandle);
+OMX_ERRORTYPE HandleJpegEncDataBuf_FromApp(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate );
+OMX_ERRORTYPE HandleJpegEncDataBuf_FromDsp( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_BUFFERHEADERTYPE* pBuffHead );
+OMX_ERRORTYPE HandleJpegEncFreeDataBuf( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_BUFFERHEADERTYPE* pBuffHead );
+OMX_ERRORTYPE HandleJpegEncFreeOutputBufferFromApp( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate );
+OMX_ERRORTYPE AllocJpegEncResources( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate );
+OMX_ERRORTYPE JPEGEnc_Free_ComponentResources(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
+OMX_ERRORTYPE Fill_JpegEncLCMLInitParams(LCML_DSP *lcml_dsp, OMX_U16 arr[], OMX_HANDLETYPE pComponent);
+OMX_ERRORTYPE GetJpegEncLCMLHandle(OMX_HANDLETYPE pComponent);
+OMX_ERRORTYPE SetJpegEncInParams(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
+OMX_ERRORTYPE SendDynamicParam(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
+OMX_BOOL IsTIOMXComponent(OMX_HANDLETYPE hComp);
 
 #ifdef __JPEG_OMX_PPLIB_ENABLED__
+#define JPEGENC_PPLIB_CREATEPARAM_SIZE 28
+#define JPEGENC_PPLIB_DYNPARM_SIZE 252
+OMX_ERRORTYPE SendDynamicPPLibParam(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate,OMX_U32 *ptInputParam);
+
+
+
+typedef struct _PPLIB_UALGRunTimeParam_t
+{
     OMX_U32 size;                            /**< Size of the structure in bytes. */
     OMX_U32 ulInWidth;                       /**< Input picture buffer width.  This value should be the same as the original decoded output width of the WMV9/VC1 stream. */
     OMX_U32 ulInHeight;                      /**< Input picture buffer height.  This value should be the same as the original decoded output height of the WMV9/VC1 stream. */
@@ -441,142 +540,7 @@ typedef struct JPEGENC_UALGOutputParams{
     OMX_U32 ulIsFrameGenerated[2];           /**< Flag to notify the user if a frame has been generated */
     OMX_U32 ulYUVFrameSize[2];               /**< YUV output size in bytes */
     OMX_U32 ulRGBFrameSize[2];               /**< RGB output size in bytes. */
-#endif
-} JPEGENC_UALGOutputParams;
-
-typedef struct _JPEGENC_CUSTOM_PARAM_DEFINITION {
-    OMX_U8 cCustomParamName[128];
-    OMX_INDEXTYPE nCustomParamIndex;
-} JPEGENC_CUSTOM_PARAM_DEFINITION;
-
-typedef struct JPEGENC_COMPONENT_PRIVATE
-{
-    JPEG_PORT_TYPE* pCompPort[NUM_OF_PORTS];
-    OMX_PORT_PARAM_TYPE* pPortParamType;
-    OMX_PORT_PARAM_TYPE* pPortParamTypeAudio;
-    OMX_PORT_PARAM_TYPE* pPortParamTypeVideo;
-    OMX_PORT_PARAM_TYPE* pPortParamTypeOthers;
-    OMX_PRIORITYMGMTTYPE* pPriorityMgmt;
-    OMX_CALLBACKTYPE cbInfo;
-    OMX_IMAGE_PARAM_QFACTORTYPE* pQualityfactor;
-    OMX_CONFIG_RECTTYPE  *pCrop;
-    /** This is component handle */
-    OMX_COMPONENTTYPE* pHandle;
-    /*Comonent Name& Version*/
-    OMX_STRING cComponentName;
-    OMX_VERSIONTYPE ComponentVersion;
-    OMX_VERSIONTYPE SpecVersion;
-
-    /** Current state of this component */
-    OMX_STATETYPE   nCurState;
-    OMX_STATETYPE   nToState;
-    OMX_U8          ExeToIdleFlag;  /* StateCheck */
-    JPE_CONVERSION_FLAG_TYPE         nConversionFlag;
-
-    OMX_U32 nInPortIn;
-    OMX_U32 nInPortOut;
-    OMX_U32 nOutPortIn;
-    OMX_U32 nOutPortOut;
-    OMX_BOOL bInportDisableIncomplete;
-    OMX_BOOL bOutportDisableIncomplete;
-    OMX_BOOL bSetLumaQuantizationTable;
-    OMX_BOOL bSetChromaQuantizationTable;
-    OMX_BOOL bSetHuffmanTable;
-	OMX_BOOL bPPLibEnable;
-    OMX_IMAGE_PARAM_QUANTIZATIONTABLETYPE *pCustomLumaQuantTable;
-    OMX_IMAGE_PARAM_QUANTIZATIONTABLETYPE *pCustomChromaQuantTable;
-    JPEGENC_CUSTOM_HUFFMANTTABLETYPE *pHuffmanTable;
-
-
-    /** The component thread handle */
-    pthread_t ComponentThread;
-    /** The pipes to maintain free buffers */
-    int free_outBuf_Q[2];
-    /** The pipes to maintain input buffers sent from app*/
-    int filled_inpBuf_Q[2];
-    /** The pipes for sending buffers to the thread */
-    int nCmdPipe[2];
-    int nCmdDataPipe[2];
-    OMX_U32 nApp_nBuf;
-    short int nNum_dspBuf;
-    int nCommentFlag;
-    OMX_U8 *pString_Comment;
-    JPEG_APPTHUMB_MARKER sAPP0;
-    JPEG_APPTHUMB_MARKER sAPP1;
-    JPEG_APPTHUMB_MARKER sAPP5;
-    JPEG_APP13_MARKER sAPP13;
-    JPEGE_INPUT_PARAMS InParams;
-#ifdef __JPEG_OMX_PPLIB_ENABLED__
-    OMX_U32 *pOutParams;
-    JPGE_PPLIB_DynamicParams* pPPLibDynParams;
-#endif
-#ifdef RESOURCE_MANAGER_ENABLED
-    RMPROXY_CALLBACKTYPE rmproxyCallback;
-    RMPROXY_COMMANDTYPE bResourceManagerState;
-#endif
-    OMX_BOOL bPreempted;
-    int nFlags;
-    int nMarkPort;
-    OMX_PTR pMarkData;
-    OMX_HANDLETYPE hMarkTargetComponent;
-    OMX_BOOL bDSPStopAck;
-   OMX_BOOL bFlushComplete;
-    OMX_BOOL bAckFromSetStatus;
-    void* pLcmlHandle;   /* Review Utils.c */
-    int isLCMLActive;
-    LCML_DSP_INTERFACE* pLCML;
-    void * pDllHandle;
-    OMX_U8 nDRI_Interval;
-#ifdef KHRONOS_1_1
-    OMX_PARAM_COMPONENTROLETYPE componentRole;
-#endif
-    IDMJPGE_TIGEM_DynamicParams *pDynParams;
-
-    pthread_mutex_t jpege_mutex;
-    pthread_mutex_t jpege_mutex_destroy; /*mutex to ensure  EMMCodecControlDestroy is not called at the same time*/
-    pthread_cond_t  stop_cond;
-    pthread_cond_t  flush_cond;
-    /* pthread_cond_t  control_cond; */
-    pthread_mutex_t jpege_mutex_app;
-    pthread_cond_t  populate_cond;
-    pthread_cond_t  unpopulate_cond;
-
-
-#ifdef __PERF_INSTRUMENTATION__
-    PERF_OBJHANDLE pPERF, pPERFcomp;
-#endif
-    struct OMX_TI_Debug dbg;
-
-    /* Reference count for pending state change requests */
-    OMX_U32 nPendingStateChangeRequests;
-    pthread_mutex_t mutexStateChangeRequest;
-    pthread_cond_t StateChangeCondition;
-
-} JPEGENC_COMPONENT_PRIVATE;
-
-
-OMX_ERRORTYPE HandleJpegEncCommand (JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
-OMX_ERRORTYPE JpegEncDisablePort(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
-OMX_ERRORTYPE JpegEncEnablePort(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
-OMX_ERRORTYPE HandleJpegEncCommandFlush(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_U32 nParam1);
-OMX_ERRORTYPE JPEGEnc_Start_ComponentThread(OMX_HANDLETYPE pHandle);
-OMX_ERRORTYPE HandleJpegEncDataBuf_FromApp(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate );
-OMX_ERRORTYPE HandleJpegEncDataBuf_FromDsp( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_BUFFERHEADERTYPE* pBuffHead );
-OMX_ERRORTYPE HandleJpegEncFreeDataBuf( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate, OMX_BUFFERHEADERTYPE* pBuffHead );
-OMX_ERRORTYPE HandleJpegEncFreeOutputBufferFromApp( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate );
-OMX_ERRORTYPE AllocJpegEncResources( JPEGENC_COMPONENT_PRIVATE *pComponentPrivate );
-OMX_ERRORTYPE JPEGEnc_Free_ComponentResources(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
-OMX_ERRORTYPE Fill_JpegEncLCMLInitParams(LCML_DSP *lcml_dsp, OMX_U16 arr[], OMX_HANDLETYPE pComponent);
-OMX_ERRORTYPE GetJpegEncLCMLHandle(OMX_HANDLETYPE pComponent);
-OMX_ERRORTYPE SetJpegEncInParams(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
-OMX_ERRORTYPE SendDynamicParam(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
-OMX_BOOL IsTIOMXComponent(OMX_HANDLETYPE hComp);
-
-#ifdef __JPEG_OMX_PPLIB_ENABLED__
-#define JPEGENC_PPLIB_CREATEPARAM_SIZE 28
-#define JPEGENC_PPLIB_DYNPARM_SIZE 252
-OMX_ERRORTYPE SendDynamicPPLibParam(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate,OMX_U32 *ptInputParam);
-
+} PPLIB_UALGRunTimeParam_t;
 
 
 
@@ -626,6 +590,7 @@ typedef enum ThrCmdType
 } ThrCmdType;
 
 typedef enum OMX_JPEGE_INDEXTYPE  {
+
     OMX_IndexCustomCommentFlag = 0xFF000001,
     OMX_IndexCustomCommentString = 0xFF000002,
     OMX_IndexCustomInputFrameWidth,
@@ -638,9 +603,8 @@ typedef enum OMX_JPEGE_INDEXTYPE  {
     OMX_IndexCustomDRI,
     OMX_IndexCustomHuffmanTable,
     OMX_IndexCustomDebug,
-	OMX_IndexCustomConversionFlag,
-	OMX_IndexCustomPPLibEnable,
-	OMX_IndexCustomPPLibDynParams
+	OMX_IndexCustomColorFormatConvertion_420pTo422i,
+	OMX_IndexCustomPPLibEnable
 }OMX_INDEXIMAGETYPE;
 
 typedef struct IUALG_Buf {
@@ -655,9 +619,17 @@ typedef struct IUALG_Buf {
     unsigned long          ulReserved;
 } IUALG_Buf;
 
-
+typedef enum {
+    IUALG_CMD_STOP             = 0,
+    IUALG_CMD_PAUSE            = 1,
+    IUALG_CMD_GETSTATUS        = 2,
+    IUALG_CMD_SETSTATUS        = 3,
+    IUALG_CMD_USERSETCMDSTART  = 100,
+    IUALG_CMD_USERGETCMDSTART  = 150,
+    IUALG_CMD_FLUSH            = 0x100
+}IUALG_Cmd;
 
 OMX_ERRORTYPE AddStateTransition(JPEGENC_COMPONENT_PRIVATE* pComponentPrivate);
 OMX_ERRORTYPE RemoveStateTransition(JPEGENC_COMPONENT_PRIVATE* pComponentPrivate, OMX_BOOL bEnableSignal);
-void Jpeg_Enc_FatalErrorRecover(JPEGENC_COMPONENT_PRIVATE *pComponentPrivate);
+
 #endif /*OMX_JPEGENC_UTILS__H*/

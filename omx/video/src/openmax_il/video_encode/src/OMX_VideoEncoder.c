@@ -76,8 +76,6 @@
 #include "OMX_VideoEnc_Utils.h"
 #include "OMX_VideoEnc_DSP.h"
 #include "OMX_VideoEnc_Thread.h"
-#include <MetadataBufferType.h>
-#include <VideoMetadata.h>
 
 #ifdef RESOURCE_MANAGER_ENABLED
     #include <ResourceManagerProxyAPI.h>
@@ -285,10 +283,10 @@ OMX_ERRORTYPE IsResolutionPlayable (OMX_U32 width, OMX_U32 height);
 static const int iQ16_Const = 1 << 16;
 static const float fQ16_Const = (float)(1 << 16);
 
-/*static float Q16Tof(int nQ16)
+static float Q16Tof(int nQ16)
 {
     return nQ16 / fQ16_Const;
-}*/
+}
 
 static int fToQ16(float f)
 {
@@ -377,17 +375,17 @@ OMX_ERRORTYPE OMX_ComponentInit (OMX_HANDLETYPE hComponent)
     pComponentPrivate->bDeblockFilter       = OMX_TRUE;
     pComponentPrivate->nVBVSize             = 120;
     pComponentPrivate->bForceIFrame         = OMX_FALSE;
-    pComponentPrivate->nIntraFrameInterval  = 15;
+    pComponentPrivate->nIntraFrameInterval  = 30;
     pComponentPrivate->nQPI                 = 12;
     pComponentPrivate->nAIRRate             = 0;
-    pComponentPrivate->intraRefreshMethod   = IH264_INTRAREFRESH_NONE;
-    pComponentPrivate->ucUnrestrictedMV     = 1;
-    pComponentPrivate->nQpMax               = 31;
-    pComponentPrivate->nQpMin               = 2;
-    pComponentPrivate->bInInvalidState      = 0;
+    pComponentPrivate->ucUnrestrictedMV     = 0;
+    pComponentPrivate->bHideEvents          = OMX_FALSE;
+    pComponentPrivate->bHandlingFatalError  = OMX_FALSE;
+    pComponentPrivate->bUnresponsiveDsp     = OMX_FALSE;
     pComponentPrivate->bCodecLoaded         = OMX_FALSE;
     pComponentPrivate->cComponentName       = "OMX.TI.Video.encoder";
-
+    pComponentPrivate->sps = NULL;
+    pComponentPrivate->spsLen = 0;
 
 #ifdef __KHRONOS_CONF__
     pComponentPrivate->bPassingIdleToLoaded = OMX_FALSE;
@@ -412,11 +410,6 @@ OMX_ERRORTYPE OMX_ComponentInit (OMX_HANDLETYPE hComponent)
     {
         pComponentPrivate->sliceGroupParams[i] = 0;
     }
-
-    pComponentPrivate->maxMBsPerSlice  = 0;
-    pComponentPrivate->maxBytesPerSlice  = 0;
-    pComponentPrivate->sliceRefreshRowNumber = 0;
-    pComponentPrivate->sliceRefreshRowStartNumber = 0;
 
     /*Assigning address of Component Structure point to place holder inside
        component private structure
@@ -575,6 +568,10 @@ sDynamicFormat = getenv("FORMAT");
                   sizeof(OMX_VIDEO_PARAM_H263TYPE),
                   OMX_VIDEO_PARAM_H263TYPE,
                   pMemoryListHead, dbg);
+    VIDENC_MALLOC(pComponentPrivate->pVidParamBitrate, 
+                  sizeof(OMX_VIDEO_PARAM_BITRATETYPE), 
+                  OMX_VIDEO_PARAM_BITRATETYPE, 
+                  pMemoryListHead, dbg);
     VIDENC_MALLOC(pComponentPrivate->pQuantization,
                   sizeof(OMX_VIDEO_PARAM_QUANTIZATIONTYPE),
                   OMX_VIDEO_PARAM_QUANTIZATIONTYPE,
@@ -586,10 +583,6 @@ sDynamicFormat = getenv("FORMAT");
     VIDENC_MALLOC(pComponentPrivate->pMotionVector,
                   sizeof(OMX_VIDEO_PARAM_MOTIONVECTORTYPE),
                   OMX_VIDEO_PARAM_MOTIONVECTORTYPE,
-                  pMemoryListHead, dbg);
-    VIDENC_MALLOC(pComponentPrivate->pCapabilityFlags,
-                  sizeof(PV_OMXComponentCapabilityFlagsType),
-                  PV_OMXComponentCapabilityFlagsType,
                   pMemoryListHead, dbg);
 
     /* Set pPortParamType defaults */
@@ -632,10 +625,13 @@ sDynamicFormat = getenv("FORMAT");
     pPortDef->format.video.nFrameHeight          = 144;
     pPortDef->format.video.nStride               = -1;
     pPortDef->format.video.nSliceHeight          = -1;
-    pPortDef->format.video.xFramerate            = fToQ16(DEFAULT_FRAMERATE);
+    pPortDef->format.video.xFramerate            = fToQ16(15.0);
     pPortDef->format.video.bFlagErrorConcealment = OMX_FALSE;
     pPortDef->format.video.eCompressionFormat    = OMX_VIDEO_CodingUnused;
     pPortDef->format.video.eColorFormat          = OMX_COLOR_FormatYUV420Planar;
+
+    /* Set the default value of the run-time Target Frame Rate to the create-time Frame Rate */
+    pComponentPrivate->nTargetFrameRate = Q16Tof(pPortDef->format.video.xFramerate);
 
     CalculateBufferSize(pPortDef, pComponentPrivate);
     pComponentPrivate->nInBufferSize = 0;
@@ -671,7 +667,7 @@ sDynamicFormat = getenv("FORMAT");
     pPortDef->format.video.nFrameHeight          = 144;
     pPortDef->format.video.nStride               = -1;
     pPortDef->format.video.nSliceHeight          = -1;
-    pPortDef->format.video.xFramerate            = fToQ16(DEFAULT_FRAMERATE);
+    pPortDef->format.video.xFramerate            = fToQ16(15.0);
     pPortDef->format.video.bFlagErrorConcealment = OMX_FALSE;
 
     if (sDynamicFormat != NULL)
@@ -781,7 +777,7 @@ sDynamicFormat = getenv("FORMAT");
     OMX_CONF_INIT_STRUCT(pComponentPrivate->pH264, OMX_VIDEO_PARAM_AVCTYPE);
     pComponentPrivate->pH264->nPortIndex                = VIDENC_OUTPUT_PORT;
     pComponentPrivate->pH264->nSliceHeaderSpacing       = 0;
-    pComponentPrivate->pH264->nPFrames                  = pComponentPrivate->nIntraFrameInterval-1;
+    pComponentPrivate->pH264->nPFrames                  = -1;
     pComponentPrivate->pH264->nBFrames                  = -1;
     pComponentPrivate->pH264->bUseHadamard              = OMX_TRUE; /*OMX_FALSE*/
     pComponentPrivate->pH264->nRefFrames                = 1; /*-1;  */
@@ -815,7 +811,7 @@ sDynamicFormat = getenv("FORMAT");
     pComponentPrivate->pMpeg4->nSliceHeaderSpacing  = 0;
     pComponentPrivate->pMpeg4->bSVH                 = OMX_FALSE;
     pComponentPrivate->pMpeg4->bGov                 = OMX_FALSE;
-    pComponentPrivate->pMpeg4->nPFrames             = pComponentPrivate->nIntraFrameInterval-1;
+    pComponentPrivate->pMpeg4->nPFrames             = -1;
     pComponentPrivate->pMpeg4->nBFrames             = -1;
     pComponentPrivate->pMpeg4->nIDCVLCThreshold     = 0;  /*-1*/
     pComponentPrivate->pMpeg4->bACPred              = OMX_TRUE;
@@ -834,7 +830,7 @@ sDynamicFormat = getenv("FORMAT");
     /* Set pH263 defaults */
     OMX_CONF_INIT_STRUCT(pComponentPrivate->pH263, OMX_VIDEO_PARAM_H263TYPE);
     pComponentPrivate->pH263->nPortIndex               = VIDENC_OUTPUT_PORT;
-    pComponentPrivate->pH263->nPFrames                 = pComponentPrivate->nIntraFrameInterval-1;
+    pComponentPrivate->pH263->nPFrames                 = 0;
     pComponentPrivate->pH263->nBFrames                 = 0;
     pComponentPrivate->pH263->eProfile                 = OMX_VIDEO_H263ProfileBaseline;
     pComponentPrivate->pH263->eLevel                   = OMX_VIDEO_H263Level10;
@@ -858,6 +854,11 @@ sDynamicFormat = getenv("FORMAT");
     pCompPortOut->pErrorCorrectionType->nResynchMarkerSpacing = 1024;
 
     pCompPortOut->pIntraRefreshType->nAirRef = 10;
+    /* Set pVidParamBitrate defaults */
+    OMX_CONF_INIT_STRUCT(pComponentPrivate->pVidParamBitrate, OMX_VIDEO_PARAM_BITRATETYPE);
+    pComponentPrivate->pVidParamBitrate->nPortIndex     = VIDENC_OUTPUT_PORT;
+    pComponentPrivate->pVidParamBitrate->eControlRate   = OMX_Video_ControlRateConstant; 
+    pComponentPrivate->pVidParamBitrate->nTargetBitrate = 64000;
     /**/
     pComponentPrivate->nMIRRate=0;
     /* Set pQuantization defaults */
@@ -874,6 +875,7 @@ sDynamicFormat = getenv("FORMAT");
     pComponentPrivate->pMotionVector->bUnrestrictedMVs = 0;   /* unused */
     pComponentPrivate->pMotionVector->eAccuracy  = OMX_Video_MotionVectorQuarterPel;
     pComponentPrivate->pMotionVector->sXSearchRange = 64;
+    pComponentPrivate->pMotionVector->sYSearchRange = 64;
 
     /* Set pIntraPeriod defaults */
     OMX_CONF_INIT_STRUCT(pComponentPrivate->pH264IntraPeriod, OMX_VIDEO_CONFIG_AVCINTRAPERIOD);
@@ -895,11 +897,11 @@ sDynamicFormat = getenv("FORMAT");
     pCompPortOut->pProfileType->nProfileIndex = 0;
     OMX_CONF_INIT_STRUCT(pCompPortIn->pFrameRateConfig, OMX_CONFIG_FRAMERATETYPE);
     pCompPortIn->pFrameRateConfig->nPortIndex = VIDENC_INPUT_PORT;
-    pCompPortIn->pFrameRateConfig->xEncodeFramerate = pCompPortIn->pPortDef->format.video.xFramerate;
+    pCompPortIn->pFrameRateConfig->xEncodeFramerate = 0;
 
     OMX_CONF_INIT_STRUCT(pCompPortOut->pFrameRateConfig, OMX_CONFIG_FRAMERATETYPE);
     pCompPortOut->pFrameRateConfig->nPortIndex = VIDENC_OUTPUT_PORT;
-    pCompPortOut->pFrameRateConfig->xEncodeFramerate = pCompPortOut->pPortDef->format.video.xFramerate;
+    pCompPortOut->pFrameRateConfig->xEncodeFramerate = (15<<16);
 
     OMX_CONF_INIT_STRUCT(pCompPortIn->pBitRateTypeConfig, OMX_VIDEO_CONFIG_BITRATETYPE);
     pCompPortIn->pBitRateTypeConfig->nPortIndex = VIDENC_INPUT_PORT;
@@ -928,16 +930,6 @@ sDynamicFormat = getenv("FORMAT");
     pCompPortOut->pBitRateType->nPortIndex = VIDENC_OUTPUT_PORT;
     pCompPortOut->pBitRateType->eControlRate = OMX_Video_ControlRateConstant;
     pCompPortOut->pBitRateType->nTargetBitrate = pCompPortOut->pBitRateTypeConfig->nEncodeBitrate;
-
-    /*set the capability Flags needed by Opencore*/
-    pComponentPrivate->pCapabilityFlags->iIsOMXComponentMultiThreaded=OMX_TRUE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentCanHandleIncompleteFrames=OMX_FALSE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentSupportsExternalInputBufferAlloc=OMX_TRUE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentSupportsExternalOutputBufferAlloc=OMX_FALSE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentSupportsMovableInputBuffers=OMX_TRUE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentSupportsPartialFrames=OMX_FALSE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentUsesFullAVCFrames=OMX_FALSE;
-    pComponentPrivate->pCapabilityFlags->iOMXComponentUsesNALStartCode=OMX_FALSE;
 
 #ifndef UNDER_CE
     /* Initialize Mutex for Buffer Tracking */
@@ -1018,6 +1010,8 @@ sDynamicFormat = getenv("FORMAT");
     pthread_cond_init (&pComponentPrivate->flush_cond, NULL);
     pthread_cond_init (&pComponentPrivate->stop_cond, NULL);
 
+    pthread_mutex_init(&bufferReturned_mutex, NULL);
+    pthread_cond_init (&bufferReturned_condition, NULL);
 #else
     OMX_CreateEvent(&(pComponentPrivate->InLoaded_event));
     OMX_CreateEvent(&(pComponentPrivate->InIdle_event));
@@ -1060,8 +1054,9 @@ static OMX_ERRORTYPE SetCallbacks (OMX_IN  OMX_HANDLETYPE hComponent,
     VIDENC_COMPONENT_PRIVATE* pComponentPrivate = NULL;
     OMX_U32* pTmp                               = NULL;
 
-    OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate, pCallBacks);
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
+    OMX_CONF_CHECK_CMD(pComponentPrivate, 1, 1);
+    OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pCallBacks, 1, 1);
 
     /*Copy the callbacks of the application to the component private */
     pTmp = memcpy (&(pComponentPrivate->sCbData), pCallBacks, sizeof(OMX_CALLBACKTYPE));
@@ -1113,9 +1108,9 @@ static OMX_ERRORTYPE GetComponentVersion (OMX_HANDLETYPE hComp,
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, szComponentName, pComponentVersion, pSpecVersion);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pComponentUUID, 1, 1);
 
-    if (pComponentPrivate->bInInvalidState != 0)
+    if (pComponentPrivate->eState == OMX_StateInvalid)
     {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
+        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorIncorrectStateOperation,
                                pComponentPrivate->dbg, OMX_PRSTATE3,
                                "Component is in invalid state.\n");
     }
@@ -1170,9 +1165,9 @@ static OMX_ERRORTYPE SendCommand (OMX_IN OMX_HANDLETYPE hComponent,
         OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pCmdData, 1, 1);
     }
 
-    if (pComponentPrivate->bInInvalidState != 0)
+    if (pComponentPrivate->eState == OMX_StateInvalid)
     {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
+        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorIncorrectStateOperation,
                                pComponentPrivate->dbg, OMX_PRSTATE3,
                                "Component is in invalid state.\n");
     }
@@ -1402,9 +1397,9 @@ static OMX_ERRORTYPE GetParameter (OMX_IN OMX_HANDLETYPE hComponent,
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, ComponentParameterStructure, 1, 1);
 
-    if (pComponentPrivate->bInInvalidState != 0)
+    if (pComponentPrivate->eState == OMX_StateInvalid)
     {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
+        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorIncorrectStateOperation,
                                pComponentPrivate->dbg, OMX_PRSTATE3,
                                "Component is in invalid state.\n");
     }
@@ -1497,11 +1492,11 @@ static OMX_ERRORTYPE GetParameter (OMX_IN OMX_HANDLETYPE hComponent,
                 eError = OMX_ErrorBadPortIndex;
             }
             break;
-        }
+            }
         case OMX_IndexParamVideoPortFormat:
             if (((OMX_VIDEO_PARAM_PORTFORMATTYPE*)(ComponentParameterStructure))->nPortIndex ==
                 pCompPortIn->pPortFormat->nPortIndex)
-            {
+        {
                 if (((OMX_VIDEO_PARAM_PORTFORMATTYPE*)(ComponentParameterStructure))->nIndex < 3)
                 {
                     ((OMX_VIDEO_PARAM_PORTFORMATTYPE*)(ComponentParameterStructure))->eColorFormat =
@@ -1531,7 +1526,7 @@ static OMX_ERRORTYPE GetParameter (OMX_IN OMX_HANDLETYPE hComponent,
                 }
             }
             else
-            {
+        {
                 eError = OMX_ErrorBadPortIndex;
             }
             break;
@@ -1622,19 +1617,6 @@ static OMX_ERRORTYPE GetParameter (OMX_IN OMX_HANDLETYPE hComponent,
             }
             break;
 
-        case OMX_IndexParamVideoIntraRefresh:
-            {
-                pTmp = memcpy(ComponentParameterStructure,
-                        pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pIntraRefreshType,
-                        sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
-                if (pTmp == NULL)
-                {
-                    OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                           pComponentPrivate->dbg, OMX_TRACE4,
-                                           "Failed to copy structure OMX_VIDEO_PARAM_INTRAREFRESHTYPE.\n");
-                }
-            }
-        break;
         case OMX_IndexParamVideoH263:
             if (((OMX_VIDEO_PARAM_H263TYPE*)(ComponentParameterStructure))->nPortIndex ==
                 pComponentPrivate->pH263->nPortIndex)
@@ -1675,86 +1657,92 @@ static OMX_ERRORTYPE GetParameter (OMX_IN OMX_HANDLETYPE hComponent,
             break;
 
 
-        case OMX_IndexParamVideoProfileLevelQuerySupported:
-        {
-           VIDEO_PROFILE_LEVEL_TYPE* pProfileLevel = NULL;
-           OMX_VIDEO_PARAM_PROFILELEVELTYPE *pParamProfileLevel = (OMX_VIDEO_PARAM_PROFILELEVELTYPE *)ComponentParameterStructure;
-           pParamProfileLevel->nPortIndex = pCompPortOut->pPortDef->nPortIndex;
-             /* Choose table based on compression format */
-           switch(pCompPortOut->pPortDef->format.video.eCompressionFormat)
-           {
-              case OMX_VIDEO_CodingH263:
-                 pProfileLevel = SupportedH263ProfileLevels;
-                 break;
-              case OMX_VIDEO_CodingMPEG4:
-                 pProfileLevel = SupportedMPEG4ProfileLevels;
-                 break;
-               case OMX_VIDEO_CodingAVC:
-                 pProfileLevel = SupportedAVCProfileLevels;
-                 break;
-               default:
-                  eError = OMX_ErrorBadParameter;
-                  return eError;
-            }
-            /* Point to table entry based on index */
-            pProfileLevel += pParamProfileLevel->nProfileIndex;
-
-            /* -1 indicates end of table */
-            if(pProfileLevel->nProfile != -1) {
-               pParamProfileLevel->eProfile = pProfileLevel->nProfile;
-               pParamProfileLevel->eLevel = pProfileLevel->nLevel;
-               eError = OMX_ErrorNone;
-            }
-            else {
-               eError = OMX_ErrorNoMore;
-            }
-        }
-        break;
-
-        case OMX_IndexParamVideoProfileLevelCurrent:
-        {
-           OMX_VIDEO_PARAM_PROFILELEVELTYPE *pParamProfileLevel = (OMX_VIDEO_PARAM_PROFILELEVELTYPE *)  ComponentParameterStructure;
-           if (pCompPortOut->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingAVC) {
-              pParamProfileLevel->eProfile = pComponentPrivate->pH264->eProfile;
-               pParamProfileLevel->eLevel = pComponentPrivate->pH264->eLevel;
-           }
-           else if (pCompPortOut->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingMPEG4) {
-              pParamProfileLevel->eProfile = pComponentPrivate->pMpeg4->eProfile;
-              pParamProfileLevel->eLevel = pComponentPrivate->pMpeg4->eLevel;
-
-           }
-           else if (pCompPortOut->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingH263) {
-              pParamProfileLevel->eProfile = pComponentPrivate->pH263->eProfile;
-              pParamProfileLevel->eLevel = pComponentPrivate->pH263->eLevel;
-           }
-           else {
+    case OMX_IndexParamVideoProfileLevelQuerySupported:
+    {
+       VIDEO_PROFILE_LEVEL_TYPE* pProfileLevel = NULL;
+        OMX_U32 nNumberOfProfiles = 0;
+       OMX_VIDEO_PARAM_PROFILELEVELTYPE *pParamProfileLevel = (OMX_VIDEO_PARAM_PROFILELEVELTYPE *)ComponentParameterStructure;
+       pParamProfileLevel->nPortIndex = pCompPortOut->pPortDef->nPortIndex;
+         /* Choose table based on compression format */
+       switch(pCompPortOut->pPortDef->format.video.eCompressionFormat)
+       {
+          case OMX_VIDEO_CodingH263:
+             pProfileLevel = SupportedH263ProfileLevels;
+             nNumberOfProfiles = sizeof(SupportedH263ProfileLevels) / sizeof (VIDEO_PROFILE_LEVEL_TYPE);
+             break;
+          case OMX_VIDEO_CodingMPEG4:
+             pProfileLevel = SupportedMPEG4ProfileLevels;
+             nNumberOfProfiles = sizeof(SupportedMPEG4ProfileLevels) / sizeof (VIDEO_PROFILE_LEVEL_TYPE);
+             break;
+           case OMX_VIDEO_CodingAVC:
+             pProfileLevel = SupportedAVCProfileLevels;
+             nNumberOfProfiles = sizeof(SupportedAVCProfileLevels) / sizeof (VIDEO_PROFILE_LEVEL_TYPE);
+             break;
+           default:
               eError = OMX_ErrorBadParameter;
-           }
-
+              return eError;
         }
-        break;
+        if(pParamProfileLevel->nProfileIndex >= nNumberOfProfiles) {
+            return OMX_ErrorBadParameter;
+        }
+        /* Point to table entry based on index */
+        pProfileLevel += pParamProfileLevel->nProfileIndex;
+
+        /* -1 indicates end of table */
+        if(pProfileLevel->nProfile != -1) {
+           pParamProfileLevel->eProfile = pProfileLevel->nProfile;
+           pParamProfileLevel->eLevel = pProfileLevel->nLevel;
+           eError = OMX_ErrorNone;
+        }
+        else {
+           eError = OMX_ErrorNoMore;
+        }
+    }
+    break;
+    case OMX_IndexParamVideoProfileLevelCurrent:
+    {
+       OMX_VIDEO_PARAM_PROFILELEVELTYPE *pParamProfileLevel = (OMX_VIDEO_PARAM_PROFILELEVELTYPE *)  ComponentParameterStructure;
+       if (pCompPortOut->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingAVC) {
+          pParamProfileLevel->eProfile = pComponentPrivate->pH264->eProfile;
+           pParamProfileLevel->eLevel = pComponentPrivate->pH264->eLevel;
+       }
+       else if (pCompPortOut->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingMPEG4) {
+          pParamProfileLevel->eProfile = pComponentPrivate->pMpeg4->eProfile;
+          pParamProfileLevel->eLevel = pComponentPrivate->pMpeg4->eLevel;
+
+       }
+       else if (pCompPortOut->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingH263) {
+          pParamProfileLevel->eProfile = pComponentPrivate->pH263->eProfile;
+          pParamProfileLevel->eLevel = pComponentPrivate->pH263->eLevel;
+       }
+       else {
+          eError = OMX_ErrorBadParameter;
+       }
+
+    }
+    break;
 
         case OMX_IndexParamVideoErrorCorrection:
-            {
-                if (((OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE*)(ComponentParameterStructure))->nPortIndex ==
-                        VIDENC_OUTPUT_PORT)
-                {
-                    pTmp = memcpy(ComponentParameterStructure,
-                        pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
-                        sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
-                    if (pTmp == NULL)
                     {
-                        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
+                    if (((OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE*)(ComponentParameterStructure))->nPortIndex ==
+                        VIDENC_OUTPUT_PORT)
+                    {
+                        pTmp = memcpy(ComponentParameterStructure,
+                                      pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
+                                      sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
+                if (pTmp == NULL)
+                {
+                    OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
                                            pComponentPrivate->dbg, OMX_TRACE4,
                                            "Failed to copy OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE parameter.\n");
-                    }
                 }
-                else
-                {
-                    eError = OMX_ErrorBadPortIndex;
-                }
-                break;
             }
+                    else
+                    {
+                        eError = OMX_ErrorBadPortIndex;
+                    }
+                    break;
+                }
 
         case VideoEncodeCustomParamIndexVBVSize:
             (*((OMX_U32*)ComponentParameterStructure)) = (OMX_U32)pComponentPrivate->nVBVSize;
@@ -1768,20 +1756,11 @@ static OMX_ERRORTYPE GetParameter (OMX_IN OMX_HANDLETYPE hComponent,
         case VideoEncodeCustomConfigIndexUnrestrictedMV:
             (*((OMX_U8*)ComponentParameterStructure)) = (OMX_U8)pComponentPrivate->ucUnrestrictedMV;
             break;
-        case VideoEncodeCustomParamIndexNALFormat:
-            (*((unsigned int*)ComponentParameterStructure)) = (unsigned int)pComponentPrivate->AVCNALFormat;
-            break;
-        case PV_OMX_COMPONENT_CAPABILITY_TYPE_INDEX:
-            pTmp = memcpy(ComponentParameterStructure,
-            pComponentPrivate->pCapabilityFlags,
-            sizeof(PV_OMXComponentCapabilityFlagsType));
-            if (pTmp == NULL)
-            {
-                OMX_CONF_SET_ERROR_BAIL(eError, OMX_ErrorUndefined);
-            }
-            break;
-        //not supported yet
-        case OMX_IndexConfigCommonRotate:
+       case VideoEncodeCustomParamIndexNALFormat:
+           (*((unsigned int*)ComponentParameterStructure)) = (unsigned int)pComponentPrivate->AVCNALFormat;
+           break;
+       //not supported yet
+       case OMX_IndexConfigCommonRotate:
            break;
         default:
             eError = OMX_ErrorUnsupportedIndex;
@@ -1818,22 +1797,14 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
     VIDEOENC_PORT_TYPE* pCompPortIn             = NULL;
     VIDEOENC_PORT_TYPE* pCompPortOut            = NULL;
 
-    OMX_VIDEO_STOREMETADATAINBUFFERSPARAMS* pStoreMetaData = (OMX_VIDEO_STOREMETADATAINBUFFERSPARAMS *) pCompParam;
-
 #ifdef __KHRONOS_CONF_1_1__
     OMX_PARAM_COMPONENTROLETYPE  *pRole = NULL;
+    OMX_VIDEO_PARAM_PROFILELEVELTYPE* sProfileLevel;
 #endif
     OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, 1);
 
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pCompParam, 1, 1);
-
-    if (pComponentPrivate->bInInvalidState != 0)
-    {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
-                               pComponentPrivate->dbg, OMX_PRSTATE3,
-                               "Component is in invalid state.\n");
-    }
 
     pMemoryListHead = pComponentPrivate->pMemoryListHead;
     pCompPortIn     = pComponentPrivate->pCompPort[VIDENC_INPUT_PORT];
@@ -1907,7 +1878,6 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
             }
             if (pComponentParam->nPortIndex == pCompPortIn->pPortDef->nPortIndex)
             {
-                OMX_CONFIG_FRAMERATETYPE *pFrameRateType = pComponentPrivate->pCompPort[VIDENC_INPUT_PORT]->pFrameRateConfig;
                 pTmp = memcpy(pCompPortIn->pPortDef,
                               pComponentParam,
                               sizeof(OMX_PARAM_PORTDEFINITIONTYPE));
@@ -1918,11 +1888,9 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
                                            "Failed to copy parameter.\n");
                 }
                 CalculateBufferSize(pCompPortIn->pPortDef, pComponentPrivate);
-                pFrameRateType->xEncodeFramerate = pCompPortIn->pPortDef->format.video.xFramerate;
             }
             else if (pComponentParam->nPortIndex == pCompPortOut->pPortDef->nPortIndex)
             {
-                OMX_CONFIG_FRAMERATETYPE *pFrameRateType = pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pFrameRateConfig;
                 pTmp = memcpy(pCompPortOut->pPortDef,
                               pComponentParam,
                               sizeof(OMX_PARAM_PORTDEFINITIONTYPE));
@@ -1940,7 +1908,6 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
                 pCompPortOut->pBitRateTypeConfig->nEncodeBitrate =
                 pCompPortOut->pBitRateType->nTargetBitrate =
                 pCompPortOut->pPortDef->format.video.nBitrate;
-                pFrameRateType->xEncodeFramerate = pCompPortOut->pPortDef->format.video.xFramerate;
             }
             else
             {
@@ -1984,8 +1951,6 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
                                            pComponentPrivate->dbg, OMX_TRACE4,
                                            "Failed to copy parameter.\n");
                 }
-                pComponentPrivate->nIntraFrameInterval  = pComponentPrivate->pMpeg4->nPFrames+1;
-
             }
             else
             {
@@ -2050,25 +2015,18 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
             break;
         }
         case OMX_IndexParamVideoErrorCorrection:
-        {
-            pTmp = memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
-                    pCompParam,
-                    sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
-            if (pTmp == NULL)
-            {
+                {
+                       pTmp = memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
+                                     pCompParam,
+                                     sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
+                       if (pTmp == NULL)
+                        {
                 OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                        pComponentPrivate->dbg, OMX_TRACE4,
-                        "Failed to copy parameter.\n");
-            }
-        }
-        break;
-        case OMX_IndexParamVideoIntraRefresh:
-        {
-            memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pIntraRefreshType,
-                pCompParam,
-                sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
-        }
-        break;
+                                       pComponentPrivate->dbg, OMX_TRACE4,
+                                       "Failed to copy parameter.\n");
+                        }
+                }
+                break;
         case OMX_IndexParamVideoH263:
         {
             OMX_VIDEO_PARAM_H263TYPE* pComponentParam = (OMX_VIDEO_PARAM_H263TYPE*)pCompParam;
@@ -2083,7 +2041,6 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
                                            pComponentPrivate->dbg, OMX_TRACE4,
                                            "Failed to copy parameter.\n");
                 }
-                pComponentPrivate->nIntraFrameInterval  = pComponentPrivate->pH263->nPFrames+1;
             }
             else
             {
@@ -2167,13 +2124,13 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
 
             {
               case OMX_VIDEO_CodingH263:
-                 pProfileLevel = SupportedH263ProfileLevels;
+                 pProfileLevel = &SupportedH263ProfileLevels;
                  break;
               case OMX_VIDEO_CodingMPEG4:
-                 pProfileLevel = SupportedMPEG4ProfileLevels;
+                 pProfileLevel = &SupportedMPEG4ProfileLevels;
                  break;
               case OMX_VIDEO_CodingAVC:
-                 pProfileLevel = SupportedAVCProfileLevels;
+                 pProfileLevel = &SupportedAVCProfileLevels;
                  break;
               default:
                  eError = OMX_ErrorBadParameter;
@@ -2224,12 +2181,6 @@ static OMX_ERRORTYPE SetParameter (OMX_IN OMX_HANDLETYPE hComponent,
        //not supported yet
        case OMX_IndexConfigCommonRotate:
        break;
-       case VideoEncoderStoreMetadatInBuffers :    	   	
-    	   	if (pStoreMetaData->bStoreMetaData == OMX_TRUE)
-    	   	{
-				pComponentPrivate->pCompPort[pStoreMetaData->nPortIndex]->VIDEncBufferType = EncoderMetadataPointers;				
-    	   	}
-       break;
 
         default:
             eError = OMX_ErrorUnsupportedIndex;
@@ -2262,8 +2213,6 @@ static OMX_ERRORTYPE GetConfig (OMX_HANDLETYPE hComponent,
     VIDENC_COMPONENT_PRIVATE* pComponentPrivate = NULL;
     OMX_ERRORTYPE eError                        = OMX_ErrorNone;
     VIDENC_NODE* pMemoryListHead                = NULL;
-    VIDEOENC_PORT_TYPE* pCompPortIn             = NULL;
-    VIDEOENC_PORT_TYPE* pCompPortOut            = NULL;
     OMX_U32* pTmp                               = NULL;
 
     OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, 1);
@@ -2271,15 +2220,13 @@ static OMX_ERRORTYPE GetConfig (OMX_HANDLETYPE hComponent,
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, ComponentConfigStructure, 1, 1);
 
-    if (pComponentPrivate->bInInvalidState != 0)
+    if (pComponentPrivate->eState == OMX_StateInvalid)
     {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
+        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorIncorrectStateOperation,
                                pComponentPrivate->dbg, OMX_PRSTATE3,
                                "Component is in invalid state.\n");
     }
 
-    pCompPortIn     = pComponentPrivate->pCompPort[VIDENC_INPUT_PORT];
-    pCompPortOut    = pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT];
     pMemoryListHead = pComponentPrivate->pMemoryListHead;
 
     switch (nConfigIndex)
@@ -2290,14 +2237,14 @@ static OMX_ERRORTYPE GetConfig (OMX_HANDLETYPE hComponent,
         case VideoEncodeCustomConfigIndexIntraFrameInterval:
             (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->nIntraFrameInterval;
             break;
+        case VideoEncodeCustomConfigIndexTargetFrameRate:
+            (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->nTargetFrameRate;
+            break;
         case VideoEncodeCustomConfigIndexQPI:
             (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->nQPI;
             break;
         case VideoEncodeCustomConfigIndexAIRRate:
             (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->nAIRRate;
-            break;
-        case VideoEncodeCustomParamIndexIntraRefreshMethod:
-            (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->intraRefreshMethod;
             break;
         /*ASO/FMO*/
         case VideoEncodeCustomConfigIndexNumSliceASO:
@@ -2324,154 +2271,120 @@ static OMX_ERRORTYPE GetConfig (OMX_HANDLETYPE hComponent,
         case VideoEncodeCustomConfigIndexSliceGroupParams:
             (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->sliceGroupParams;
             break;
-        case VideoEncodeCustomParamIndexMaxMBsPerSlice:
-            (*((OMX_U32*)ComponentConfigStructure)) =
-            pComponentPrivate->maxMBsPerSlice;
-            break;
-        case VideoEncodeCustomParamIndexMaxBytesPerSlice:
-            (*((OMX_U32*)ComponentConfigStructure)) =
-            pComponentPrivate->maxBytesPerSlice;
-            break;
-        case VideoEncodeCustomParamIndexSliceRefreshRowNumber:
-            (*((OMX_U32*)ComponentConfigStructure)) =
-            pComponentPrivate->sliceRefreshRowNumber;
-            break;
-        case VideoEncodeCustomParamIndexSliceRefreshRowStartNumber:
-            (*((OMX_U32*)ComponentConfigStructure)) =
-            pComponentPrivate->sliceRefreshRowStartNumber;
-            break;
 
 #ifdef __KHRONOS_CONF_1_1__
-        case OMX_IndexConfigVideoFramerate:
+    case OMX_IndexConfigVideoFramerate:
             {
-                OMX_CONFIG_FRAMERATETYPE *pFrameRateType = (OMX_CONFIG_FRAMERATETYPE*)ComponentConfigStructure;
 
-                if(pFrameRateType->nPortIndex == pCompPortIn->pPortDef->nPortIndex)
-                {
-                    pTmp = memcpy(pFrameRateType, pCompPortIn->pFrameRateConfig,
-                                  sizeof(OMX_CONFIG_FRAMERATETYPE));
-                    if (pTmp == NULL)
-                    {
-                        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                               pComponentPrivate->dbg, OMX_TRACE4,
-                                               "Failed to copy config.\n");
-                    }
-                }
-                else if(pFrameRateType->nPortIndex == pCompPortOut->pPortDef->nPortIndex)
-                {
-                    pTmp = memcpy(pFrameRateType, pCompPortOut->pFrameRateConfig,
-                                  sizeof(OMX_CONFIG_FRAMERATETYPE));
-                    if (pTmp == NULL)
-                    {
-                        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                               pComponentPrivate->dbg, OMX_TRACE4,
-                                               "Failed to copy config.\n");
-                    }
-                }
-                else
-                {
-                    eError = OMX_ErrorBadPortIndex;
-                }
+            pTmp = memcpy(ComponentConfigStructure,
+                          pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pFrameRateConfig,
+                          sizeof(OMX_CONFIG_FRAMERATETYPE));
+            if (pTmp == NULL)
+            {
+                OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
+                                       pComponentPrivate->dbg, OMX_TRACE4,
+                                       "Failed to copy config.\n");
             }
-            break;
-        case OMX_IndexConfigVideoBitrate:
-                {
-                pTmp = memcpy(ComponentConfigStructure,
-                              pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig,
-                              sizeof(OMX_VIDEO_CONFIG_BITRATETYPE));
-                if (pTmp == NULL)
-                {
-                    OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                           pComponentPrivate->dbg, OMX_TRACE4,
-                                           "Failed to copy config.\n");
-                }
+        }
+    break;
+    case OMX_IndexConfigVideoBitrate:
+            {
+            pTmp = memcpy(ComponentConfigStructure,
+                          pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig,
+                          sizeof(OMX_VIDEO_CONFIG_BITRATETYPE));
+            if (pTmp == NULL)
+            {
+                OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
+                                       pComponentPrivate->dbg, OMX_TRACE4,
+                                       "Failed to copy config.\n");
             }
-            break;
+        }
+    break;
 #endif
-        case OMX_IndexParamVideoMotionVector:
-            {
-                /* also get parameters in this structure that are tracked outside of it */
-                pComponentPrivate->pMotionVector->bFourMV = pComponentPrivate->maxMVperMB >= 4;
-                pComponentPrivate->pMotionVector->eAccuracy = OMX_Video_MotionVectorQuarterPel;
+    case OMX_IndexParamVideoMotionVector:
+        {
+            /* also get parameters in this structure that are tracked outside of it */
+            pComponentPrivate->pMotionVector->bFourMV = pComponentPrivate->maxMVperMB >= 4;
+            pComponentPrivate->pMotionVector->eAccuracy = OMX_Video_MotionVectorQuarterPel;
 
+            pTmp = memcpy(ComponentConfigStructure,
+                          pComponentPrivate->pMotionVector,
+                          sizeof(OMX_VIDEO_PARAM_MOTIONVECTORTYPE));
+            if (pTmp == NULL)
+            {
+                OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
+                                       pComponentPrivate->dbg, OMX_TRACE4,
+                                       "Failed to copy config.\n");
+            }
+        }
+    case OMX_IndexConfigVideoAVCIntraPeriod:
+        {
+            /* also get parameters in this structure that are tracked outside of it */
+            pComponentPrivate->pH264IntraPeriod->nPFrames = pComponentPrivate->nIntraFrameInterval;
+            pComponentPrivate->pH264IntraPeriod->nIDRPeriod = 0;
+
+            pTmp = memcpy(ComponentConfigStructure,
+                          pComponentPrivate->pH264IntraPeriod,
+                          sizeof(OMX_VIDEO_CONFIG_AVCINTRAPERIOD));
+            if (pTmp == NULL)
+            {
+                OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
+                                       pComponentPrivate->dbg, OMX_TRACE4,
+                                       "Failed to copy structure OMX_VIDEO_CONFIG_AVCINTRAPERIOD.\n");
+            }
+        }
+    case OMX_IndexParamVideoIntraRefresh:
+             {
+                 pTmp = memcpy(ComponentConfigStructure,
+                               pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pIntraRefreshType,
+                               sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
+                 if (pTmp == NULL)
+            {
+                OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
+                                       pComponentPrivate->dbg, OMX_TRACE4,
+                                       "Failed to copy structure OMX_VIDEO_PARAM_INTRAREFRESHTYPE.\n");
+            }
+        }
+    break;
+    case OMX_IndexParamVideoErrorCorrection:
+            {
+            if (((OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE*)(ComponentConfigStructure))->nPortIndex ==
+                VIDENC_OUTPUT_PORT)
+            {
                 pTmp = memcpy(ComponentConfigStructure,
-                              pComponentPrivate->pMotionVector,
-                              sizeof(OMX_VIDEO_PARAM_MOTIONVECTORTYPE));
+                              pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
+                              sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
                 if (pTmp == NULL)
                 {
                     OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
                                            pComponentPrivate->dbg, OMX_TRACE4,
-                                           "Failed to copy config.\n");
+                                           "Failed to copy structure OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE.\n");
                 }
             }
-        case OMX_IndexConfigVideoAVCIntraPeriod:
+            else
             {
-                /* also get parameters in this structure that are tracked outside of it */
-                pComponentPrivate->pH264IntraPeriod->nPFrames = pComponentPrivate->nIntraFrameInterval;
-                pComponentPrivate->pH264IntraPeriod->nIDRPeriod = 0;
-
-                pTmp = memcpy(ComponentConfigStructure,
-                              pComponentPrivate->pH264IntraPeriod,
-                              sizeof(OMX_VIDEO_CONFIG_AVCINTRAPERIOD));
-                if (pTmp == NULL)
-                {
-                    OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                           pComponentPrivate->dbg, OMX_TRACE4,
-                                           "Failed to copy structure OMX_VIDEO_CONFIG_AVCINTRAPERIOD.\n");
-                }
+                eError = OMX_ErrorBadPortIndex;
             }
-        case OMX_IndexParamVideoIntraRefresh:
-            {
-                pTmp = memcpy(ComponentConfigStructure,
-                        pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pIntraRefreshType,
-                        sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
-                if (pTmp == NULL)
-                {
-                    OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                pComponentPrivate->dbg, OMX_TRACE4,
-                                "Failed to copy structure OMX_VIDEO_PARAM_INTRAREFRESHTYPE.\n");
-                }
-            }
-        break;
-        case OMX_IndexParamVideoErrorCorrection:
-                {
-                if (((OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE*)(ComponentConfigStructure))->nPortIndex ==
-                    VIDENC_OUTPUT_PORT)
-                {
-                    pTmp = memcpy(ComponentConfigStructure,
-                                  pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
-                                  sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
-                    if (pTmp == NULL)
-                    {
-                        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorUndefined,
-                                               pComponentPrivate->dbg, OMX_TRACE4,
-                                               "Failed to copy structure OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE.\n");
-                    }
-                }
-                else
-                {
-                    eError = OMX_ErrorBadPortIndex;
-                }
-                break;
-            }
-        case VideoEncodeCustomConfigIndexDebug:
-            OMX_DBG_GETCONFIG(pComponentPrivate->dbg, ComponentConfigStructure);
             break;
-        case VideoEncodeCustomConfigIndexMIRRate:
-                (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->nMIRRate;
-                break;
-        case VideoEncodeCustomConfigIndexMVDataEnable:
-                (*((OMX_BOOL*)ComponentConfigStructure)) = (OMX_BOOL)pComponentPrivate->bMVDataEnable;
-                 break;
-        case VideoEncodeCustomConfigIndexResyncDataEnable:
-                (*((OMX_BOOL*)ComponentConfigStructure)) = (OMX_BOOL)pComponentPrivate->bResyncDataEnable;
-                 break;
-        case VideoEncodeCustomConfigIndexMaxMVperMB:
-                (*((OMX_U32*)ComponentConfigStructure))  =  (OMX_U32)pComponentPrivate->maxMVperMB;
-                break;
-        case VideoEncodeCustomConfigIndexIntra4x4EnableIdc:
-                (*((IH264VENC_Intra4x4Params*)ComponentConfigStructure)) = (IH264VENC_Intra4x4Params)pComponentPrivate->intra4x4EnableIdc;
+        }
+    case VideoEncodeCustomConfigIndexDebug:
+        OMX_DBG_GETCONFIG(pComponentPrivate->dbg, ComponentConfigStructure);
+        break;
+    case VideoEncodeCustomConfigIndexMIRRate:
+            (*((OMX_U32*)ComponentConfigStructure)) = (OMX_U32)pComponentPrivate->nMIRRate;
+            break;
+    case VideoEncodeCustomConfigIndexMVDataEnable:
+            (*((OMX_BOOL*)ComponentConfigStructure)) = (OMX_BOOL)pComponentPrivate->bMVDataEnable;
              break;
+    case VideoEncodeCustomConfigIndexResyncDataEnable:
+            (*((OMX_BOOL*)ComponentConfigStructure)) = (OMX_BOOL)pComponentPrivate->bResyncDataEnable;
+             break;
+    case VideoEncodeCustomConfigIndexMaxMVperMB:
+            (*((OMX_U32*)ComponentConfigStructure))  =  (OMX_U32)pComponentPrivate->maxMVperMB;
+            break;
+    case VideoEncodeCustomConfigIndexIntra4x4EnableIdc:
+            (*((IH264VENC_Intra4x4Params*)ComponentConfigStructure)) = (IH264VENC_Intra4x4Params)pComponentPrivate->intra4x4EnableIdc;
+         break;
         default:
             eError = OMX_ErrorUnsupportedIndex;
             break;
@@ -2504,8 +2417,6 @@ static OMX_ERRORTYPE SetConfig (OMX_HANDLETYPE hComponent,
     VIDENC_COMPONENT_PRIVATE* pComponentPrivate = NULL;
     OMX_ERRORTYPE eError                        = OMX_ErrorNone;
     VIDENC_NODE* pMemoryListHead                = NULL;
-    VIDEOENC_PORT_TYPE* pCompPortIn             = NULL;
-    VIDEOENC_PORT_TYPE* pCompPortOut            = NULL;
     OMX_U32 i;
 
     OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, 1);
@@ -2513,15 +2424,13 @@ static OMX_ERRORTYPE SetConfig (OMX_HANDLETYPE hComponent,
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, ComponentConfigStructure, 1, 1);
 
-    if (pComponentPrivate->bInInvalidState != 0)
+    if (pComponentPrivate->eState == OMX_StateInvalid)
     {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
+        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorIncorrectStateOperation,
                                pComponentPrivate->dbg, OMX_PRSTATE3,
                                "Component is in invalid state.\n");
     }
 
-    pCompPortIn     = pComponentPrivate->pCompPort[VIDENC_INPUT_PORT];
-    pCompPortOut    = pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT];
     pMemoryListHead = pComponentPrivate->pMemoryListHead;
 
     switch (nConfigIndex)
@@ -2531,18 +2440,15 @@ static OMX_ERRORTYPE SetConfig (OMX_HANDLETYPE hComponent,
             break;
         case VideoEncodeCustomConfigIndexIntraFrameInterval:
             pComponentPrivate->nIntraFrameInterval = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            pComponentPrivate->pH264->nPFrames = pComponentPrivate->nIntraFrameInterval-1;
-            pComponentPrivate->pH263->nPFrames = pComponentPrivate->nIntraFrameInterval-1;
-            pComponentPrivate->pMpeg4->nPFrames = pComponentPrivate->nIntraFrameInterval-1;
+            break;
+        case VideoEncodeCustomConfigIndexTargetFrameRate:
+            pComponentPrivate->nTargetFrameRate = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
             break;
         case VideoEncodeCustomConfigIndexQPI:
             pComponentPrivate->nQPI = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
             break;
         case VideoEncodeCustomConfigIndexAIRRate:
             pComponentPrivate->nAIRRate = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            break;
-        case VideoEncodeCustomParamIndexIntraRefreshMethod:
-            pComponentPrivate->intraRefreshMethod = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
             break;
         /*ASO/FMO*/
         case VideoEncodeCustomConfigIndexNumSliceASO:
@@ -2575,116 +2481,90 @@ static OMX_ERRORTYPE SetConfig (OMX_HANDLETYPE hComponent,
                 pComponentPrivate->sliceGroupParams[i] = (OMX_U32)(*((*((OMX_U32**)ComponentConfigStructure))+i));
             }
             break;
-        case VideoEncodeCustomParamIndexMaxMBsPerSlice:
-            pComponentPrivate->maxMBsPerSlice = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            break;
-        case VideoEncodeCustomParamIndexMaxBytesPerSlice:
-            pComponentPrivate->maxBytesPerSlice = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            break;
-        case VideoEncodeCustomParamIndexSliceRefreshRowNumber:
-            pComponentPrivate->sliceRefreshRowNumber = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            break;
-        case VideoEncodeCustomParamIndexSliceRefreshRowStartNumber:
-            pComponentPrivate->sliceRefreshRowStartNumber = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            break;
-        case OMX_IndexConfigVideoFramerate:
-        {
-            OMX_CONFIG_FRAMERATETYPE *pFrameRateType = (OMX_CONFIG_FRAMERATETYPE*)ComponentConfigStructure;
-
-            if(pFrameRateType->nPortIndex == pCompPortIn->pPortDef->nPortIndex)
-            {
-                memcpy(pCompPortIn->pFrameRateConfig, pFrameRateType, sizeof(OMX_CONFIG_FRAMERATETYPE));
-                pCompPortIn->pPortDef->format.video.xFramerate = pFrameRateType->xEncodeFramerate;
-            }
-            else if(pFrameRateType->nPortIndex == pCompPortOut->pPortDef->nPortIndex)
-            {
-                memcpy(pCompPortOut->pFrameRateConfig, pFrameRateType, sizeof(OMX_CONFIG_FRAMERATETYPE));
-                pCompPortOut->pPortDef->format.video.xFramerate = pFrameRateType->xEncodeFramerate;
-            }
-            else
-            {
-                eError = OMX_ErrorBadPortIndex;
-            }
-
-        }
-        break;
-        case OMX_IndexConfigVideoBitrate:
-        {
-            memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig,
-                   ComponentConfigStructure,
-                   sizeof(OMX_VIDEO_CONFIG_BITRATETYPE));
-
-            if(!pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig->nEncodeBitrate)
-            {
-                pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig->nEncodeBitrate = OMX_VIDENC_GetDefaultBitRate(pComponentPrivate);
-            }
-            pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pPortDef->format.video.nBitrate =
-            pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateType->nTargetBitrate =
-            pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig->nEncodeBitrate;
-        }
-        break;
-        case OMX_IndexParamVideoErrorCorrection:
-        {
-            memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
-                   ComponentConfigStructure,
-                   sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
-        }
-        break;
-        case OMX_IndexParamVideoIntraRefresh:
-            {
-                memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pIntraRefreshType,
-                    ComponentConfigStructure,
-                    sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
-            }
-            break;
-        case OMX_IndexParamVideoMotionVector:
-            {
-                memcpy(pComponentPrivate->pMotionVector,
-                        ComponentConfigStructure,
-                        sizeof(OMX_VIDEO_PARAM_MOTIONVECTORTYPE));
-                /* also set parameters set by this structure that are tracked outside of it */
-                pComponentPrivate->maxMVperMB = pComponentPrivate->pMotionVector->bFourMV ? 4 : 1;
-
-                /* quarter pixel accuracy must be always enabled */
-                if (pComponentPrivate->pMotionVector->eAccuracy < OMX_Video_MotionVectorQuarterPel)
-                    eError = OMX_ErrorBadParameter;
-            }
-            break;
-        case OMX_IndexConfigVideoAVCIntraPeriod:
-            {
-                memcpy(pComponentPrivate->pH264IntraPeriod,
-                        ComponentConfigStructure,
-                        sizeof(OMX_VIDEO_CONFIG_AVCINTRAPERIOD));
-                /* also set parameters set by this structure that are tracked outside of it */
-                pComponentPrivate->nIntraFrameInterval = pComponentPrivate->pH264IntraPeriod->nPFrames;
-            }
-            break;
-        case VideoEncodeCustomConfigIndexDebug:
-            OMX_DBG_SETCONFIG(pComponentPrivate->dbg, ComponentConfigStructure);
-            break;
-        case VideoEncodeCustomConfigIndexMIRRate:
-                    pComponentPrivate->nMIRRate = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            break;
-        case VideoEncodeCustomConfigIndexMVDataEnable:
-            pComponentPrivate->bMVDataEnable = (OMX_BOOL)(*((OMX_BOOL*)ComponentConfigStructure));
-             break;
-        case VideoEncodeCustomConfigIndexResyncDataEnable:
-            pComponentPrivate->bResyncDataEnable = (OMX_BOOL)(*((OMX_BOOL*)ComponentConfigStructure));
-             break;
-        case VideoEncodeCustomConfigIndexMaxMVperMB:
-            i = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
-            if (i==1 || i==4)
-                pComponentPrivate->maxMVperMB=i;
-            else
-                eError = OMX_ErrorBadParameter;
-             break;
-        case VideoEncodeCustomConfigIndexIntra4x4EnableIdc:
-            pComponentPrivate->intra4x4EnableIdc = (IH264VENC_Intra4x4Params)(*((IH264VENC_Intra4x4Params*)ComponentConfigStructure));
-             break;
-        default:
-            eError = OMX_ErrorUnsupportedIndex;
-             break;
+    case OMX_IndexConfigVideoFramerate:
+    {
+        memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pFrameRateConfig,
+               ComponentConfigStructure,
+               sizeof(OMX_CONFIG_FRAMERATETYPE));
     }
+    break;
+    case OMX_IndexConfigVideoBitrate:
+    {
+        memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig,
+               ComponentConfigStructure,
+               sizeof(OMX_VIDEO_CONFIG_BITRATETYPE));
+
+        if(!pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig->nEncodeBitrate)
+        {
+            pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig->nEncodeBitrate = OMX_VIDENC_GetDefaultBitRate(pComponentPrivate);
+        }
+        pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pPortDef->format.video.nBitrate =
+        pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateType->nTargetBitrate =
+        pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pBitRateTypeConfig->nEncodeBitrate;
+    }
+    break;
+    case OMX_IndexParamVideoErrorCorrection:
+    {
+        memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pErrorCorrectionType,
+               ComponentConfigStructure,
+               sizeof(OMX_VIDEO_PARAM_ERRORCORRECTIONTYPE));
+    }
+    break;
+    case OMX_IndexParamVideoIntraRefresh:
+        {
+        memcpy(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pIntraRefreshType,
+                ComponentConfigStructure,
+                sizeof(OMX_VIDEO_PARAM_INTRAREFRESHTYPE));
+        }
+        break;
+    case OMX_IndexParamVideoMotionVector:
+        {
+            memcpy(pComponentPrivate->pMotionVector,
+                    ComponentConfigStructure,
+                    sizeof(OMX_VIDEO_PARAM_MOTIONVECTORTYPE));
+            /* also set parameters set by this structure that are tracked outside of it */
+            pComponentPrivate->maxMVperMB = pComponentPrivate->pMotionVector->bFourMV ? 4 : 1;
+
+            /* quarter pixel accuracy must be always enabled */
+            if (pComponentPrivate->pMotionVector->eAccuracy < OMX_Video_MotionVectorQuarterPel)
+                eError = OMX_ErrorBadParameter;
+        }
+        break;
+    case OMX_IndexConfigVideoAVCIntraPeriod:
+        {
+            memcpy(pComponentPrivate->pH264IntraPeriod,
+                    ComponentConfigStructure,
+                    sizeof(OMX_VIDEO_CONFIG_AVCINTRAPERIOD));
+            /* also set parameters set by this structure that are tracked outside of it */
+            pComponentPrivate->nIntraFrameInterval = pComponentPrivate->pH264IntraPeriod->nPFrames;
+        }
+        break;
+    case VideoEncodeCustomConfigIndexDebug:
+        OMX_DBG_SETCONFIG(pComponentPrivate->dbg, ComponentConfigStructure);
+        break;
+    case VideoEncodeCustomConfigIndexMIRRate:
+                pComponentPrivate->nMIRRate = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
+        break;
+    case VideoEncodeCustomConfigIndexMVDataEnable:
+        pComponentPrivate->bMVDataEnable = (OMX_BOOL)(*((OMX_BOOL*)ComponentConfigStructure));
+         break;
+    case VideoEncodeCustomConfigIndexResyncDataEnable:
+        pComponentPrivate->bResyncDataEnable = (OMX_BOOL)(*((OMX_BOOL*)ComponentConfigStructure));
+         break;
+    case VideoEncodeCustomConfigIndexMaxMVperMB:
+        i = (OMX_U32)(*((OMX_U32*)ComponentConfigStructure));
+        if (i==1 || i==4)
+            pComponentPrivate->maxMVperMB=i;
+        else
+            eError = OMX_ErrorBadParameter;
+         break;
+    case VideoEncodeCustomConfigIndexIntra4x4EnableIdc:
+        pComponentPrivate->intra4x4EnableIdc = (IH264VENC_Intra4x4Params)(*((IH264VENC_Intra4x4Params*)ComponentConfigStructure));
+         break;
+    default:
+        eError = OMX_ErrorUnsupportedIndex;
+         break;
+        }
 
 OMX_CONF_CMD_BAIL:
     return eError;
@@ -2710,17 +2590,15 @@ static OMX_ERRORTYPE ExtensionIndex(OMX_IN OMX_HANDLETYPE hComponent,
                                        OMX_IN OMX_STRING cParameterName,
                                        OMX_OUT OMX_INDEXTYPE* pIndexType)
 {
-    VIDENC_COMPONENT_PRIVATE* pComponentPrivate = NULL;
-
     VIDENC_CUSTOM_DEFINITION sVideoEncodeCustomIndex[] =
     {
         {"OMX.TI.VideoEncode.Param.VBVSize", VideoEncodeCustomParamIndexVBVSize},
         {"OMX.TI.VideoEncode.Param.DeblockFilter", VideoEncodeCustomParamIndexDeblockFilter},
         {"OMX.TI.VideoEncode.Config.ForceIFrame", VideoEncodeCustomConfigIndexForceIFrame},
         {"OMX.TI.VideoEncode.Config.IntraFrameInterval", VideoEncodeCustomConfigIndexIntraFrameInterval},
+        {"OMX.TI.VideoEncode.Config.TargetFrameRate", VideoEncodeCustomConfigIndexTargetFrameRate},
         {"OMX.TI.VideoEncode.Config.QPI", VideoEncodeCustomConfigIndexQPI},
         {"OMX.TI.VideoEncode.Config.AIRRate", VideoEncodeCustomConfigIndexAIRRate},
-        {"OMX.TI.VideoEncode.Config.IntraRefreshMethod", VideoEncodeCustomParamIndexIntraRefreshMethod},
         {"OMX.TI.VideoEncode.Config.UnrestrictedMV", VideoEncodeCustomConfigIndexUnrestrictedMV},
 
         /*Segment mode Metadata*/
@@ -2743,27 +2621,19 @@ static OMX_ERRORTYPE ExtensionIndex(OMX_IN OMX_HANDLETYPE hComponent,
         {"OMX.TI.VideoEncode.Config.Intra4x4EnableIdc", VideoEncodeCustomConfigIndexIntra4x4EnableIdc},
         {"OMX.TI.VideoEncode.Config.EncodingPreset", VideoEncodeCustomParamIndexEncodingPreset},
         {"OMX.TI.VideoEncode.Config.NALFormat", VideoEncodeCustomParamIndexNALFormat},
-        {"OMX.TI.VideoEncode.Config.MaxMBsPerSlice", VideoEncodeCustomParamIndexMaxMBsPerSlice},
-        {"OMX.TI.VideoEncode.Config.MaxBytesPerSlice", VideoEncodeCustomParamIndexMaxBytesPerSlice},
-        {"OMX.TI.VideoEncode.Config.SliceRefreshRowNumber", VideoEncodeCustomParamIndexSliceRefreshRowNumber},
-        {"OMX.TI.VideoEncode.Config.SliceRefreshRowStartNumber", VideoEncodeCustomParamIndexSliceRefreshRowStartNumber},
-        {"OMX.google.android.index.storeMetaDataInBuffers",VideoEncoderStoreMetadatInBuffers},
         {"OMX.TI.VideoEncode.Debug", VideoEncodeCustomConfigIndexDebug}
     };
     OMX_ERRORTYPE eError = OMX_ErrorNone;
     int nIndex = 0;
+    const int nNumberIndices = sizeof(sVideoEncodeCustomIndex)/sizeof(sVideoEncodeCustomIndex[0]);
 
-    OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, pIndexType);
-    pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
-
-    if (pComponentPrivate->bInInvalidState != 0)
+    if (!hComponent || !pIndexType)
     {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
-                               pComponentPrivate->dbg, OMX_PRSTATE3,
-                               "Component is in invalid state.\n");
+        eError = OMX_ErrorBadParameter;
+        goto OMX_CONF_CMD_BAIL;
     }
 
-    for (nIndex = 0; nIndex < sizeof(sVideoEncodeCustomIndex)/sizeof(VIDENC_CUSTOM_DEFINITION); nIndex++)
+    for (nIndex = 0; nIndex < nNumberIndices; nIndex++)
     {
         if (!strcmp((const char*)cParameterName, (const char*)(&(sVideoEncodeCustomIndex[nIndex].cCustomName))))
         {
@@ -2805,15 +2675,15 @@ static OMX_ERRORTYPE GetState (OMX_IN OMX_HANDLETYPE hComponent,
     /* Set to sufficiently high value */
     int mutex_timeout = 3;
 
-    OMX_CONF_CHECK_CMD(hComponent, pState, ((OMX_COMPONENTTYPE *)hComponent)->pComponentPrivate);
+    if(hComponent == NULL || pState == NULL) {
+        return OMX_ErrorBadParameter;
+    }
 
     pHandle = (OMX_COMPONENTTYPE*)hComponent;
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)pHandle->pComponentPrivate;
 
-    if(pComponentPrivate->bInInvalidState != 0) {
-       *pState = OMX_StateInvalid;
-       return OMX_ErrorNone;
-    }
+    /* Retrieve current state */
+    if (pHandle && pHandle->pComponentPrivate) {
         /* Check for any pending state transition requests */
         if(pthread_mutex_lock(&pComponentPrivate->mutexStateChangeRequest)) {
             return OMX_ErrorUndefined;
@@ -2825,7 +2695,7 @@ static OMX_ERRORTYPE GetState (OMX_IN OMX_HANDLETYPE hComponent,
            }
 
            /* No pending state transitions */
-       *pState = pComponentPrivate->eState;
+           *pState = ((VIDENC_COMPONENT_PRIVATE*)pHandle->pComponentPrivate)->eState;
            eError = OMX_ErrorNone;
         }
         else {
@@ -2844,17 +2714,17 @@ static OMX_ERRORTYPE GetState (OMX_IN OMX_HANDLETYPE hComponent,
            }
            else if(ret == ETIMEDOUT) {
               /* Unlock mutex in case of timeout */
+              OMX_ERROR4(pComponentPrivate->dbg, "GetState timed out\n");
               pthread_mutex_unlock(&pComponentPrivate->mutexStateChangeRequest);
-              return OMX_ErrorTimeout;
-           }
-           else {
-              /* Incase of other errors unlock the mutex*/
-              pthread_mutex_unlock(&pComponentPrivate->mutexStateChangeRequest);
-              return OMX_ErrorUndefined;
+              *pState = OMX_StateInvalid;
+              return OMX_ErrorNone;
            }
         }
-
-OMX_CONF_CMD_BAIL:
+    }
+     else {
+        eError = OMX_ErrorInvalidComponent;
+        *pState = OMX_StateInvalid;
+    }
 
     return eError;
 }
@@ -2885,19 +2755,12 @@ static OMX_ERRORTYPE EmptyThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
     VIDENC_BUFFER_PRIVATE* pBufferPrivate       = NULL;
     VIDENC_NODE* pMemoryListHead                = NULL;
     OMX_PARAM_PORTDEFINITIONTYPE* pPortDefIn    = NULL;
-    OMX_U32 FilledLen                           = 0;
 
     OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, 1);
 
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pBufHead, 1, 1);
 
-    if (pComponentPrivate->bInInvalidState != 0)
-    {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
-                               pComponentPrivate->dbg, OMX_PRSTATE3,
-                               "Component is in invalid state.\n");
-    }
     hTunnelComponent = pComponentPrivate->pCompPort[VIDENC_INPUT_PORT]->hTunnelComponent;
 
     pComponentPrivate->pMarkData = pBufHead->pMarkData;
@@ -2932,11 +2795,6 @@ static OMX_ERRORTYPE EmptyThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
     OMX_CONF_CHK_VERSION(pBufHead, OMX_BUFFERHEADERTYPE, eError);
     pMemoryListHead = pComponentPrivate->pMemoryListHead;
 
-	if (pComponentPrivate->pCompPort[0]->VIDEncBufferType == EncoderMetadataPointers)
-	{
-	    FilledLen = pBufHead->nFilledLen;
-	    pBufHead->nFilledLen = pBufHead->nAllocLen;
-	}
 
 #ifdef __PERF_INSTRUMENTATION__
     PERF_ReceivedFrame(pComponentPrivate->pPERF,
@@ -2957,6 +2815,37 @@ static OMX_ERRORTYPE EmptyThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
 
     pBufferPrivate->eBufferOwner = VIDENC_BUFFER_WITH_COMPONENT;
     pBufferPrivate->bReadFromPipe = OMX_FALSE;
+    /* Check if frame rate needs to be updated */
+    pComponentPrivate->nFrameCount++;
+    pComponentPrivate->nVideoTime = pBufHead->nTimeStamp - pComponentPrivate->nLastUpdateTime;
+
+    if (pComponentPrivate->nFrameCount == pComponentPrivate->nFrameRateUpdateInterval) {
+
+         if(pComponentPrivate->nVideoTime <= 0) {
+            /* Incorrect time stamps */
+            return OMX_ErrorBadParameter;
+         }
+
+        /* Timestamps are in micro seconds  */
+        pComponentPrivate->nTargetFrameRate = pComponentPrivate->nFrameCount * 1000000 / pComponentPrivate->nVideoTime;
+
+        if(pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pPortDef->format.video.eCompressionFormat == OMX_VIDEO_CodingAVC) {
+             /* H.264 Socket Node expects frame rate to be multiplied by 1000 */
+             pComponentPrivate->nTargetFrameRate *= 1000;
+
+             if((pComponentPrivate->nPrevTargetFrameRate) &&
+                (pComponentPrivate->nTargetFrameRate ==  pComponentPrivate->nPrevTargetFrameRate)) {
+                  pComponentPrivate->bForceIFrame = OMX_TRUE;
+             }
+             else {
+                  pComponentPrivate->nPrevTargetFrameRate = pComponentPrivate->nTargetFrameRate;
+                  pComponentPrivate->bForceIFrame = OMX_FALSE;
+             }
+        }
+        pComponentPrivate->nLastUpdateTime = pBufHead->nTimeStamp;
+        pComponentPrivate->nFrameCount = 0;
+    }
+
     nRet = write(pComponentPrivate->nFilled_iPipe[1],
                  &(pBufHead),
                  sizeof(pBufHead));
@@ -2966,8 +2855,9 @@ static OMX_ERRORTYPE EmptyThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
         OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorHardware,
                                pComponentPrivate->dbg, OMX_PRBUFFER4,
                                "failed to write to nFilled_iPipe.\n");
+    } else {
+        OMX_VIDENC_IncrementBufferCountByOne(&pComponentPrivate->EmptythisbufferCount);
     }
-
     if (pthread_mutex_unlock(&(pComponentPrivate->mVideoEncodeBufferMutex)) != 0)
     {
         OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorHardware,
@@ -2988,10 +2878,6 @@ static OMX_ERRORTYPE EmptyThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
     }
 #endif
 
-	if (pComponentPrivate->pCompPort[0]->VIDEncBufferType == EncoderMetadataPointers)
-	{
-		    pBufHead->nFilledLen = FilledLen;
-	}
 OMX_CONF_CMD_BAIL:
     return eError;
 }
@@ -3026,12 +2912,6 @@ static OMX_ERRORTYPE FillThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pBufHead, 1, 1);
 
-    if (pComponentPrivate->bInInvalidState != 0)
-    {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
-                               pComponentPrivate->dbg, OMX_PRSTATE3,
-                               "Component is in invalid state.\n");
-    }
 
     hTunnelComponent = pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->hTunnelComponent;
     pPortDefOut = pComponentPrivate->pCompPort[VIDENC_OUTPUT_PORT]->pPortDef;
@@ -3105,8 +2985,9 @@ static OMX_ERRORTYPE FillThisBuffer (OMX_IN OMX_HANDLETYPE hComponent,
         OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorHardware,
                                pComponentPrivate->dbg, OMX_PRBUFFER4,
                                "failed to write to nFree_oPipe.\n");
+    } else {
+        OMX_VIDENC_IncrementBufferCountByOne(&pComponentPrivate->FillthisbufferCount);
     }
-
     if (pthread_mutex_unlock(&(pComponentPrivate->mVideoEncodeBufferMutex)) != 0)
     {
         OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorHardware,
@@ -3150,18 +3031,16 @@ static OMX_ERRORTYPE ComponentDeInit(OMX_IN OMX_HANDLETYPE hComponent)
 {
     OMX_ERRORTYPE eError                        = OMX_ErrorNone;
     VIDENC_COMPONENT_PRIVATE* pComponentPrivate = NULL;
+    LCML_DSP_INTERFACE* pLcmlHandle             = NULL;
     VIDENC_NODE* pMemoryListHead                = NULL;
     OMX_ERRORTYPE eErr  = OMX_ErrorNone;
     OMX_S32 nRet        = -1;
     OMX_S32 nStop       = -1;
-    LCML_DSP_INTERFACE* pLcmlHandle = NULL;
+    OMX_U32 nTimeout    = 0;
     struct OMX_TI_Debug dbg;
 
     OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, 1);
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
-    if (pComponentPrivate == NULL){
-        return OMX_ErrorBadParameter;
-    }
 
     dbg = pComponentPrivate->dbg;
 
@@ -3171,11 +3050,60 @@ static OMX_ERRORTYPE ComponentDeInit(OMX_IN OMX_HANDLETYPE hComponent)
     PERF_Boundary(pComponentPrivate->pPERF,
                   PERF_BoundaryStart | PERF_BoundaryCleanup);
 #endif
-    if((pComponentPrivate->bInInvalidState == 1) && pComponentPrivate->bCodecLoaded)
+    while(1)
     {
-        pComponentPrivate->bInInvalidState++;
-        OMX_VIDENC_FatalErrorRecover(pComponentPrivate);
+        if(!(pComponentPrivate->bHandlingFatalError))
+        {
+            if(!(pComponentPrivate->bErrorLcmlHandle) &&
+               !(pComponentPrivate->bUnresponsiveDsp))
+            { /* Add for ResourceExhaustionTest*/
+                pLcmlHandle = pComponentPrivate->pLCML;
+                if (pLcmlHandle != NULL)
+                {
+                    if (pComponentPrivate->bCodecStarted == OMX_TRUE ||
+                    pComponentPrivate->bCodecLoaded == OMX_TRUE)
+                    {
+                        eError = LCML_ControlCodec(((LCML_DSP_INTERFACE*)pLcmlHandle)->pCodecinterfacehandle,
+                                                   EMMCodecControlDestroy,
+                                                   NULL);
+                        if (eError != OMX_ErrorNone)
+                        {
+                            OMX_PRDSP4(dbg, "error when requesting EMMCodecControlDestroy");
+                            eError = OMX_ErrorUndefined;
+                        }
+
+#ifdef UNDER_CE
+                        FreeLibrary(g_hLcmlDllHandle);
+                        g_hLcmlDllHandle = NULL;
+#endif
+                    }
+                }
+            }
+            break;
+        }
+        if(nTimeout++ > VIDENC_MAX_COMPONENT_TIMEOUT)
+        {
+            OMX_ERROR5(dbg, "TimeOut in HandlingFatalError!\n");
+            break;
+        }
+        sched_yield();
     }
+
+
+        /*Unload LCML */
+    if(pComponentPrivate->pModLcml != NULL)
+    {
+#ifndef UNDER_CE
+        dlclose(pComponentPrivate->pModLcml);
+#else
+        FreeLibrary(pComponentPrivate->pModLcml);
+#endif
+       pComponentPrivate->pModLcml = NULL;
+       pComponentPrivate->pLCML = NULL;
+    }
+
+
+    pComponentPrivate->bCodecStarted = OMX_FALSE;
 
     nStop = -1;
 #ifdef __PERF_INSTRUMENTATION__
@@ -3198,35 +3126,6 @@ static OMX_ERRORTYPE ComponentDeInit(OMX_IN OMX_HANDLETYPE hComponent)
         eError = OMX_ErrorHardware;
         OMX_TRACE4(dbg, "Error pthread_join (%d).\n", eErr);
     }
-
-    if (pComponentPrivate->bCodecStarted == OMX_TRUE ||
-        pComponentPrivate->bCodecLoaded == OMX_TRUE)
-    {
-        pLcmlHandle = (LCML_DSP_INTERFACE*)pComponentPrivate->pLCML;
-        if (pLcmlHandle != NULL)
-        {
-             eError = LCML_ControlCodec(((LCML_DSP_INTERFACE*)pLcmlHandle)->pCodecinterfacehandle,
-                                        EMMCodecControlDestroy,
-                                        NULL);
-             OMX_DBG_BAIL_IF_ERROR(eError, pComponentPrivate->dbg, OMX_PRDSP3,
-                                   "Failed to destroy socket node (%x).\n", eError);
-             pLcmlHandle = NULL;
-             pComponentPrivate->pLCML = NULL;
-             pComponentPrivate->bCodecLoaded = OMX_FALSE;
-        }
-        /*Unload LCML */
-        if(pComponentPrivate->pModLcml != NULL)
-        {
-    #ifndef UNDER_CE
-            dlclose(pComponentPrivate->pModLcml);
-    #else
-            FreeLibrary(pComponentPrivate->pModLcml);
-    #endif
-           pComponentPrivate->pModLcml = NULL;
-           pComponentPrivate->pLCML = NULL;
-        }
-    }
-    pComponentPrivate->bCodecStarted = OMX_FALSE;
 
     /*close the data pipe handles*/
     eErr = close(pComponentPrivate->nFree_oPipe[0]);
@@ -3310,21 +3209,20 @@ static OMX_ERRORTYPE ComponentDeInit(OMX_IN OMX_HANDLETYPE hComponent)
     pthread_cond_destroy(&pComponentPrivate->unpopulate_cond);
     pthread_cond_destroy(&pComponentPrivate->flush_cond);
     pthread_cond_destroy(&pComponentPrivate->stop_cond);
+    pthread_mutex_destroy(&bufferReturned_mutex);
+    pthread_cond_destroy(&bufferReturned_condition);
 #else
     OMX_DestroyEvent(&(pComponentPrivate->InLoaded_event));
     OMX_DestroyEvent(&(pComponentPrivate->InIdle_event));
 #endif
 
 #ifdef RESOURCE_MANAGER_ENABLED
-    if(pComponentPrivate->bInInvalidState == 0)
+    /* Deinitialize Resource Manager */
+    eError = RMProxy_DeinitalizeEx(OMX_COMPONENTTYPE_VIDEO);
+    if (eError != OMX_ErrorNone)
     {
-        /* Deinitialize Resource Manager */
-        eError = RMProxy_DeinitalizeEx(OMX_COMPONENTTYPE_VIDEO);
-        if (eError != OMX_ErrorNone)
-        {
-            OMX_PRMGR4(dbg, "Error returned from destroy ResourceManagerProxy thread\n");
-            eError = OMX_ErrorUndefined;
-        }
+        OMX_PRMGR4(dbg, "Error returned from destroy ResourceManagerProxy thread\n");
+        eError = OMX_ErrorUndefined;
     }
 #endif
 
@@ -3386,18 +3284,7 @@ OMX_ERRORTYPE UseBuffer(OMX_IN OMX_HANDLETYPE hComponent,
     OMX_CONF_CHECK_CMD(hComponent, ((OMX_COMPONENTTYPE *) hComponent)->pComponentPrivate, 1);
 
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
-
-    if ((pComponentPrivate->pCompPort[0]->VIDEncBufferType != EncoderMetadataPointers) && (nPortIndex == VIDENC_INPUT_PORT))
-    {
-    	OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, ppBufferHdr, pBuffer, 1);
-    }
-
-    if (pComponentPrivate->bInInvalidState != 0)
-    {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
-                               pComponentPrivate->dbg, OMX_PRSTATE3,
-                               "Component is in invalid state.\n");
-    }
+    OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, ppBufferHdr, pBuffer, 1);
 
     if (nPortIndex == VIDENC_INPUT_PORT)
     {
@@ -3434,6 +3321,14 @@ OMX_ERRORTYPE UseBuffer(OMX_IN OMX_HANDLETYPE hComponent,
             "Allocating invalid size buffer: nBufferSize: %lu nSizeBytes: %lu\n", pPortDef->nBufferSize, nSizeBytes);
     }
 
+
+    if (pComponentPrivate->eState == OMX_StateInvalid)
+    {
+        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
+                               pComponentPrivate->dbg, OMX_PRBUFFER4,
+                               "Using buffer in invalid state.\n");
+    }
+
     pMemoryListHead=pComponentPrivate->pMemoryListHead;
 
 
@@ -3452,22 +3347,9 @@ OMX_ERRORTYPE UseBuffer(OMX_IN OMX_HANDLETYPE hComponent,
                   sizeof(OMX_BUFFERHEADERTYPE),
                   OMX_BUFFERHEADERTYPE, pMemoryListHead, pComponentPrivate->dbg);
 
-    if ((pComponentPrivate->pCompPort[0]->VIDEncBufferType == EncoderMetadataPointers)
-    		&& (nPortIndex == VIDENC_INPUT_PORT))
-    {
-       VIDENC_MALLOC(pBufferPrivate->pBufferHdr->pBuffer ,
-                          sizeof(video_metadata_t),
-                          video_metadata_t,
-                          pMemoryListHead, pComponentPrivate->dbg);
-
-    }
-    else
-    {
-        pBufferPrivate->pBufferHdr->pBuffer     = pBuffer;
-    }
-
     pBufferPrivate->pBufferHdr->nSize       = sizeof(OMX_BUFFERHEADERTYPE);
     pBufferPrivate->pBufferHdr->nVersion    = pPortDef->nVersion;
+    pBufferPrivate->pBufferHdr->pBuffer     = pBuffer;
     pBufferPrivate->pBufferHdr->pAppPrivate = pAppPrivate;
     pBufferPrivate->pBufferHdr->nAllocLen   = nSizeBytes;
 
@@ -3572,6 +3454,7 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
     OMX_ERRORTYPE eError                        = OMX_ErrorNone;
     OMX_COMPONENTTYPE* pHandle                  = NULL;
     VIDENC_COMPONENT_PRIVATE* pComponentPrivate = NULL;
+    char* pTemp                                 = NULL;
     VIDEOENC_PORT_TYPE* pCompPort               = NULL;
     OMX_PARAM_PORTDEFINITIONTYPE* pPortDef      = NULL;
     OMX_PARAM_PORTDEFINITIONTYPE* pPortDefOut   = NULL;
@@ -3604,8 +3487,19 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
         {
             if (pBufferPrivate->pUalgParam != NULL)
             {
-                VIDENC_FREE(pBufferPrivate->pUalgParam, pMemoryListHead, pComponentPrivate->dbg);
+                pTemp = (char*)pBufferPrivate->pUalgParam;
+                pTemp -= 128;
+                if (eCompressionFormat == OMX_VIDEO_CodingAVC)
+                {
+                    pBufferPrivate->pUalgParam = (H264VE_GPP_SN_UALGInputParams*)pTemp;
+                }
+                else if (eCompressionFormat == OMX_VIDEO_CodingMPEG4 ||
+                         eCompressionFormat ==OMX_VIDEO_CodingH263)
+                {
+                    pBufferPrivate->pUalgParam = (MP4VE_GPP_SN_UALGInputParams*)pTemp;
+                }
             }
+            VIDENC_FREE(pBufferPrivate->pUalgParam, pMemoryListHead, pComponentPrivate->dbg);
         }
     }
     else if (nPortIndex == VIDENC_OUTPUT_PORT)
@@ -3615,8 +3509,19 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
         {
             if (pBufferPrivate->pUalgParam != NULL)
             {
-                VIDENC_FREE(pBufferPrivate->pUalgParam, pMemoryListHead, pComponentPrivate->dbg);
+                pTemp = (char*)pBufferPrivate->pUalgParam;
+                pTemp -= 128;
+                if (eCompressionFormat == OMX_VIDEO_CodingAVC)
+                {
+                    pBufferPrivate->pUalgParam = (H264VE_GPP_SN_UALGOutputParams*)pTemp;
+                }
+                else if (eCompressionFormat == OMX_VIDEO_CodingMPEG4 ||
+                         eCompressionFormat ==OMX_VIDEO_CodingH263)
+                {
+                    pBufferPrivate->pUalgParam = (MP4VE_GPP_SN_UALGOutputParams*)pTemp;
+                }
             }
+            VIDENC_FREE(pBufferPrivate->pUalgParam, pMemoryListHead, pComponentPrivate->dbg);
         }
     }
     else
@@ -3646,6 +3551,8 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
     {
         if (pBufHead->pBuffer != NULL)
         {
+            pBufHead->pBuffer -= 128;
+            pBufHead->pBuffer = (unsigned char*)pBufHead->pBuffer;
             VIDENC_FREE(pBufHead->pBuffer, pMemoryListHead, pComponentPrivate->dbg);
         }
     }
@@ -3667,7 +3574,6 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
     OMX_CONF_CIRCULAR_BUFFER_DELETE_NODE(pComponentPrivate,
                                          pComponentPrivate->sCircularBuffer);
     pCompPort->nBufferCnt--;
-    if(pComponentPrivate->bInInvalidState == OMX_FALSE) {
     if (pCompPort->nBufferCnt == 0)
     {
 
@@ -3678,7 +3584,7 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
        pthread_mutex_unlock(&pComponentPrivate->videoe_mutex_app);
 #else
        pPortDef->bPopulated = OMX_FALSE;
-           OMX_SignalEvent(&(pComponentPrivate->InIdle_event));
+       OMX_SignalEvent(&(pComponentPrivate->InIdle_event));
 #endif
     }
 
@@ -3695,7 +3601,6 @@ OMX_ERRORTYPE FreeBuffer(OMX_IN  OMX_HANDLETYPE hComponent,
                                       OMX_ErrorPortUnpopulated,
                                       nPortIndex,
                                       NULL);
-        }
     }
 OMX_CONF_CMD_BAIL:
     return eError;
@@ -3738,18 +3643,6 @@ OMX_ERRORTYPE AllocateBuffer(OMX_IN OMX_HANDLETYPE hComponent,
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
     OMX_DBG_CHECK_CMD(pComponentPrivate->dbg, pBufHead, 1, 1);
 
-    if ((pComponentPrivate->pCompPort[0]->VIDEncBufferType == EncoderMetadataPointers) &&
-    		(nPortIndex == VIDENC_INPUT_PORT))
-    {
-    	return UseBuffer( hComponent, pBufHead, nPortIndex, pAppPrivate, nSizeBytes, NULL );
-    }
-
-    if (pComponentPrivate->bInInvalidState != 0)
-    {
-        OMX_DBG_SET_ERROR_BAIL(eError, OMX_ErrorInvalidState,
-                               pComponentPrivate->dbg, OMX_PRSTATE3,
-                               "Component is in invalid state.\n");
-    }
     pHandle = (OMX_COMPONENTTYPE*)hComponent;
 
     if (nPortIndex == VIDENC_INPUT_PORT)
@@ -3808,10 +3701,12 @@ OMX_ERRORTYPE AllocateBuffer(OMX_IN OMX_HANDLETYPE hComponent,
         (*pBufHead)->nOutputPortIndex = VIDENC_OUTPUT_PORT;
     }
 
-    VIDENC_MALLOC_DSP_ALLIGNED((*pBufHead)->pBuffer,
-                  nSizeBytes,
+    VIDENC_MALLOC((*pBufHead)->pBuffer,
+                  nSizeBytes + 256,
                   OMX_U8,
                   pMemoryListHead, pComponentPrivate->dbg);
+    ((*pBufHead)->pBuffer) += 128;
+    ((*pBufHead)->pBuffer) = (unsigned char*)((*pBufHead)->pBuffer);
     (*pBufHead)->nSize       = sizeof(OMX_BUFFERHEADERTYPE);
     (*pBufHead)->nVersion    = pPortDef->nVersion;
     (*pBufHead)->pAppPrivate = pAppPrivate;
@@ -3987,10 +3882,6 @@ static OMX_BOOL IsTIOMXComponent(OMX_HANDLETYPE hComp, struct OMX_TI_Debug *dbg)
         eError = OMX_ErrorInsufficientResources;
         OMX_TRACE4(*dbg, "Error in video encoder OMX_ErrorInsufficientResources %d\n",__LINE__);
         goto EXIT;
-    }
-    else
-    {
-	memset(pTunnelcComponentName,0,128);
     }
 
     pTunnelComponentVersion = malloc(sizeof(OMX_VERSIONTYPE));
@@ -4171,8 +4062,8 @@ static OMX_ERRORTYPE ComponentRoleEnum(OMX_IN OMX_HANDLETYPE hComponent,
 
     if (hComponent==NULL)
     {
-        eError= OMX_ErrorBadParameter;
         goto OMX_CONF_CMD_BAIL;
+        eError= OMX_ErrorBadParameter;
         }
 
     pComponentPrivate = (VIDENC_COMPONENT_PRIVATE*)(((OMX_COMPONENTTYPE*)hComponent)->pComponentPrivate);
